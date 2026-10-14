@@ -573,7 +573,10 @@ impl G<'_, '_> {
     fn popup_rect(&self, pop: Popup) -> Rect {
         let (at, w, h) = match pop {
             Popup::Presets { at } => (at, 256.0, num_factory_presets() as f32 * 16.0 + 8.0),
-            Popup::Choice { param, at } => (at, 150.0, param.desc().choices.len().max(1) as f32 * 16.0 + 8.0),
+            Popup::Choice { param, at } => {
+                let (w, row, _) = choice_metrics(param);
+                (at, w + 8.0, param.desc().choices.len().max(1) as f32 * row + 8.0)
+            }
             Popup::Modulation { at, .. } => (at, 230.0, 8.0 + 16.0 * (6.0 + NUM_FIXED_SOURCES as f32 / 2.0)),
             Popup::RowSource { at, .. } => (at, 260.0, 8.0 + 16.0 * ((NUM_FIXED_SOURCES as f32 + 4.0) / 2.0).ceil()),
             Popup::RowTarget { at, .. } => (at, 420.0, 8.0 + 16.0 * (num_mod_targets() as f32 / 2.0).ceil()),
@@ -610,8 +613,11 @@ impl G<'_, '_> {
             Popup::Choice { param, .. } => {
                 let d = param.desc();
                 let current = self.plain(param).round() as usize;
+                let (w, row, font) = choice_metrics(param);
                 for (i, c) in d.choices.iter().enumerate() {
-                    if self.popup_item(&format!("choice:{}:{i}", d.id_string), origin + vec2(0.0, i as f32 * 16.0), 142.0, &c.to_uppercase(), current == i) {
+                    let key = format!("choice:{}:{i}", d.id_string);
+                    let at = origin + vec2(0.0, i as f32 * row);
+                    if self.popup_item_sized(&key, at, w, row - 1.0, &c.to_uppercase(), current == i, font) {
                         self.change_plain(param, i as f32);
                         close = true;
                     }
@@ -649,8 +655,13 @@ impl G<'_, '_> {
     }
 
     pub(crate) fn popup_item(&mut self, key: &str, at: Pos2, w: f32, text: &str, selected: bool) -> bool {
+        self.popup_item_sized(key, at, w, 15.0, text, selected, 8.5)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn popup_item_sized(&mut self, key: &str, at: Pos2, w: f32, h: f32, text: &str, selected: bool, font: f32) -> bool {
         let cv = self.cv;
-        let rect = cv.r(at.x, at.y, w, 15.0);
+        let rect = cv.r(at.x, at.y, w, h);
         let resp = self.ui.interact(rect, Id::new(("popup", key)), Sense::click());
         self.register(key, ControlKind::Button, rect);
         if resp.hovered() || selected {
@@ -659,7 +670,7 @@ impl G<'_, '_> {
         }
         let ink = if selected { self.th.oled_ink } else { self.th.text };
         self.pt
-            .text(rect.left_center() + vec2(5.0 * cv.s, 0.0), Align2::LEFT_CENTER, text, cv.mono(8.5), ink);
+            .text(rect.left_center() + vec2(5.0 * cv.s, 0.0), Align2::LEFT_CENTER, text, cv.mono(font), ink);
         resp.clicked()
     }
 
@@ -749,6 +760,15 @@ impl G<'_, '_> {
 
 /// Sources offered in palettes and choosers: every fixed source, the four
 /// pre-mapped CC aliases (SPEC 4.1) and the currently picked CC.
+/// Item width, row pitch and font size of a choice list. The wavetable lists
+/// are as wide as their selector on the OSC tab and set larger.
+fn choice_metrics(param: ParamId) -> (f32, f32, f32) {
+    match param {
+        ParamId::OscATable | ParamId::OscBTable => (tabs::TABLE_SELECTOR_W, 24.0, 12.5),
+        _ => (142.0, 16.0, 8.5),
+    }
+}
+
 pub(crate) fn palette_sources(cc_pick: u8) -> Vec<usize> {
     use crate::dsp::mod_matrix::cc_source_index;
     let mut v: Vec<usize> = (1..NUM_FIXED_SOURCES).collect();

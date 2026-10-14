@@ -641,6 +641,12 @@ impl G<'_, '_> {
     /// Box showing a choice parameter's value with arrows either side. Arrows
     /// and the wheel step; clicking the name opens the full list.
     pub fn selector(&mut self, id: ParamId, x: f32, y: f32, w: f32, label: &str) {
+        self.selector_sized(id, x, y, w, label, 9.5);
+    }
+
+    /// [`Self::selector`] with the value set at `size`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn selector_sized(&mut self, id: ParamId, x: f32, y: f32, w: f32, label: &str, size: f32) {
         let cv = self.cv;
         let d = id.desc();
         let rect = cv.r(x, y, w, 20.0);
@@ -688,7 +694,7 @@ impl G<'_, '_> {
             StrokeKind::Inside,
         );
         let text = self.value_text(id).to_uppercase();
-        self.text(rect.center(), Align2::CENTER_CENTER, &text, 9.5, self.accent);
+        self.text(rect.center(), Align2::CENTER_CENTER, &text, size, self.accent);
         for (cx, dir) in [(x + 7.0, -1.0), (x + w - 7.0, 1.0)] {
             let c = cv.p(cx, y + 10.0);
             self.pt.add(Shape::convex_polygon(

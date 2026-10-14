@@ -16,8 +16,9 @@ use crate::dsp::mod_matrix::{
 use crate::dsp::params::{ParamId, CUSTOM_TABLE_CHOICE, FILTER_TYPES};
 use crate::dsp::wavetable::Wavetable;
 
-/// Width of each oscillator panel on the OSC tab.
+/// Width of each oscillator panel on the OSC tab, and of its table selector.
 const OSC_W: f32 = 590.0;
+pub(crate) const TABLE_SELECTOR_W: f32 = 290.0;
 /// Width of the envelope and LFO panels, height of their graphs and the
 /// centre line of the knob row below them.
 const MOD_W: f32 = 504.0;
@@ -137,7 +138,7 @@ impl G<'_, '_> {
         let w = OSC_W;
         self.osc_header(osc, x0, section);
 
-        self.selector(p(1), x0 + 8.0, 104.0, 290.0, "");
+        self.selector_sized(p(1), x0 + 8.0, 104.0, TABLE_SELECTOR_W, "", 13.0);
         self.field(p(5), x0 + 306.0, 104.0, 88.0, "OCT");
         self.field(p(6), x0 + 400.0, 104.0, 88.0, "SEMI");
         self.field(p(7), x0 + 494.0, 104.0, w - 502.0, "FINE");
