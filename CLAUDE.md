@@ -44,7 +44,7 @@ Two layers with a hard boundary:
 
 ### Engine
 
-`Synth` owns the parameter array, voice pool (16 + 4 slots for 10 ms steal fades), global LFOs, oversampling (1/2/4×, oscillators + filter only; envelopes, LFOs and matrix at the base rate), the FX chain and the denormal guard. `Voice` runs 2 oscillators + sub/noise → filter → VCA with per-sample matrix evaluation. Modulation is soft-limited against the headroom to the range edge (`Voice::modulated`), never around the centre. Wavetables: fixed 2048-sample frames, ≤256 frames, 11-level FFT mip chain; factory frames RMS-normalised; `factory_index()` is `None` after any edit, which makes patches embed the samples. Patches are the C++ JSON format (schema 1); unresolved matrix rows are kept and re-saved verbatim.
+`Synth` owns the parameter array, voice pool (16 + 4 slots for 10 ms steal fades), global LFOs, oversampling (1/2/4×, oscillators + filter only; envelopes, LFOs and matrix at the base rate), the FX chain and the denormal guard. `Voice` runs 2 oscillators + sub/noise → filter → VCA with per-sample matrix evaluation. Modulation is soft-limited against the headroom to the range edge (`Voice::modulated`), never around the centre. Wavetables: fixed 2048-sample frames, ≤256 frames, 11-level FFT mip chain; factory frames RMS-normalised; `factory_index()` is `None` after any edit, which makes patches embed the samples. Patches are the C++ JSON format (schema 1); unresolved matrix rows are kept and re-saved verbatim. Factory presets are built in code (`dsp/presets.rs`, pure functions returning `PatchData`); `tests/no_alloc.rs` renders every one, so a new preset is covered automatically.
 
 ### Editor (`src/editor/`)
 
@@ -53,8 +53,8 @@ Painted on a fixed 1400×905 canvas (`BW`/`BH`) through `Cv`, scaled to the wind
 - Parameter values reach the plugin asynchronously. Read through `G::shown`/`plain` (pending values win until the host applies them) and write only through `send` inside `begin`/`end`, or `change`/`change_plain`. Faders track drags in egui temp memory; graph handles use `drag_offset` (offset from the press origin) because egui swallows the first ~6 px of a drag, so test drags on handles must be longer than that.
 - Modulation: every modulatable control calls `mod_target`, which records it as a drop target for source chips (`drag_and_drop`) and opens the popover on right-click. `mod_info` sums matrix rows per target each frame for the range overlays.
 - Popups are drawn last and shielded with a background interact so the click on an entry does not reach controls underneath.
-- Never hard-code colours; add a `Theme` field and fill it for all four themes (Tokyo Night default, Catppuccin, Dracula, Gruvbox — same set as the sibling synths). `Section` indexes bar/accent colours; `modulation` and `warning` are the matrix colours.
-- `src/editor_tests.rs` runs the real editor headless against a mock host that applies values late and checks gesture balance; every control registers its rect in `EditorState::controls` under its parameter ID (or a fixed key).
+- Never hard-code colours; add a `Theme` field (`theme.rs`) and fill it for all four themes (Tokyo Night default, Catppuccin, Dracula, Gruvbox — same set as the sibling synths). `Section` indexes bar/accent colours; `modulation` and `warning` are the matrix colours.
+- `src/editor_tests.rs` (compiled as `editor::tests` via `#[path]`) runs the real editor headless against a mock host that applies values late and checks gesture balance; every control registers its rect in `EditorState::controls` under its parameter ID (or a fixed key).
 
 ## Conventions
 
