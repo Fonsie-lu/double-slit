@@ -249,8 +249,8 @@ fn scale_of(c: &ControlInfo, canvas_width: f32) -> f32 {
     c.rect.width() / canvas_width
 }
 
-/// Every parameter is reachable from some tab. Resonance and the sustain
-/// levels are the vertical axis of the filter graph and the envelope handles.
+/// Every parameter is reachable from some tab and modulator page. Resonance
+/// is the vertical axis of the filter graph.
 #[test]
 fn every_parameter_has_a_control() {
     let mut h = Harness::new(3);
@@ -259,23 +259,36 @@ fn every_parameter_has_a_control() {
         h.open_tab(tab);
         seen.extend(h.state.controls.iter().map(|c| c.name.clone()));
     }
+    for page in ["modtab:env:1", "modtab:lfo:1"] {
+        let c = h.control(page);
+        h.click(c.rect.center());
+        seen.extend(h.state.controls.iter().map(|c| c.name.clone()));
+    }
     let missing: Vec<&str> = crate::dsp::params::descs()
         .iter()
         .map(|d| d.id_string.as_str())
         .filter(|id| !seen.contains(*id))
         .collect();
-    assert_eq!(missing, ["filter.res", "envAmp.sustain", "envMod.sustain"]);
+    assert_eq!(missing, ["filter.res"]);
 }
 
-/// Every fader, knob and value field on the OSC tab and the bottom half
-/// follows a drag by the full distance, even though the host applies values late.
+/// Every fader, knob and value field on the OSC, FILTER and FX tabs and the
+/// bottom half follows a drag by the full distance, even though the host applies values late.
 #[test]
 fn faders_follow_drag_with_host_latency() {
     use crate::editor::widgets::{FIELD_TRAVEL, KNOB_TRAVEL};
     let mut h = Harness::new(4);
     let mut checked = 0;
-    for (kind, width, travel) in [(ControlKind::Fader, 28.0, TRAVEL), (ControlKind::Knob, 0.0, KNOB_TRAVEL), (ControlKind::Field, 0.0, FIELD_TRAVEL)] {
+    let kinds = [(ControlKind::Fader, 28.0, TRAVEL), (ControlKind::Knob, 0.0, KNOB_TRAVEL), (ControlKind::Field, 0.0, FIELD_TRAVEL)];
+    for (tab, (kind, width, travel)) in [Tab::Osc, Tab::Filter, Tab::Fx].into_iter().flat_map(|t| kinds.map(|k| (t, k))) {
+        if h.state.tab != tab {
+            h.open_tab(tab);
+        }
         for c in h.controls(kind) {
+            // The bottom half is drawn on every tab; test it once.
+            if tab != Tab::Osc && c.rect.top() > BAR_Y[2] {
+                continue;
+            }
             // Knobs and fields come in several sizes; the harness canvas is unscaled.
             let s = if width > 0.0 { scale_of(&c, width) } else { 1.0 };
             let before = h.value(&c.name);
@@ -294,7 +307,7 @@ fn faders_follow_drag_with_host_latency() {
             checked += 1;
         }
     }
-    assert!(checked > 40, "only {checked} controls");
+    assert!(checked > 60, "only {checked} controls");
     h.assert_clean();
 }
 
@@ -323,7 +336,10 @@ fn double_click_resets_and_scroll_changes() {
 #[test]
 fn steppers_click_positions() {
     let mut h = Harness::new(3);
-    for c in h.controls(ControlKind::Stepper) {
+    h.open_tab(Tab::Fx);
+    let steppers = h.controls(ControlKind::Stepper);
+    assert!(!steppers.is_empty());
+    for c in steppers {
         let s = scale_of(&c, 54.0);
         h.click(pos2(c.rect.center().x, c.rect.top() + 16.0 * s));
         h.settle();
@@ -403,7 +419,8 @@ fn envelope_handles_drag_times_and_sustain() {
     let attack = h.control("envAmp.attack");
     assert_eq!(attack.kind, ControlKind::Handle);
     let s = attack.rect.width() / 18.0;
-    let zone = 0.3 * (220.0 - 16.0) * s;
+    // The graph is MOD_W - 16 wide and GRAPH_H high, with an 8 px margin.
+    let zone = 0.3 * (504.0 - 16.0 - 16.0) * s;
     let before = h.value("envAmp.attack");
     h.drag(attack.rect.center(), vec2(0.25 * zone, 0.0), 10);
     h.settle();
@@ -411,11 +428,34 @@ fn envelope_handles_drag_times_and_sustain() {
 
     let decay = h.control("envAmp.decay");
     let (d0, s0) = (h.value("envAmp.decay"), h.value("envAmp.sustain"));
-    let height = (BAR_Y[2] + 186.0 - (BAR_Y[2] + 56.0) - 16.0) * s;
+    let height = (236.0 - 16.0) * s;
     h.drag(decay.rect.center(), vec2(0.2 * zone, 0.2 * height), 10);
     h.settle();
     assert!((h.value("envAmp.decay") - d0 - 0.2).abs() < 0.03);
     assert!((h.value("envAmp.sustain") - s0 + 0.2).abs() < 0.03);
+    h.assert_clean();
+}
+
+/// Modulator tabs switch the page; cells of a choice list select their value.
+#[test]
+fn modulator_tabs_and_choice_lists() {
+    let mut h = Harness::new(2);
+    assert!(h.try_control("lfo2.rate").is_none());
+    let tab = h.control("modtab:lfo:1");
+    h.click(tab.rect.center());
+    assert_eq!(h.state.lfo_page, 1);
+    assert!(h.try_control("lfo1.rate").is_none());
+    for (cell, param, value) in [("lfo2.shape#4", "lfo2.shape", 4.0), ("lfo2.retrig#2", "lfo2.retrig", 2.0), ("master.oversampling#2", "master.oversampling", 2.0)] {
+        let c = h.control(cell);
+        assert_eq!(c.kind, ControlKind::List);
+        h.click(c.rect.center());
+        h.settle();
+        assert_eq!(h.plain(param), value, "{cell}");
+    }
+    let tab = h.control("modtab:env:1");
+    h.click(tab.rect.center());
+    assert_eq!(h.state.env_page, 1);
+    assert!(h.try_control("envMod.attack").is_some());
     h.assert_clean();
 }
 
@@ -460,8 +500,9 @@ fn dropping_a_source_on_a_fader_adds_a_row() {
     assert!(h.state.drag_source.is_none());
     let target = mod_target_index_for_param(ParamId::OscAWtPos).unwrap();
     assert!(h.state.mod_info[target].pos > 0.4);
-    // Dropping on empty panel adds nothing.
-    h.drag(chip.rect.center(), vec2(0.0, -200.0), 8);
+    // Dropping on the header (no control there) adds nothing.
+    let header = pos2(chip.rect.center().x, 30.0);
+    h.drag(chip.rect.center(), header - chip.rect.center(), 8);
     assert_eq!(h.rows().len(), 1);
     h.assert_clean();
 }

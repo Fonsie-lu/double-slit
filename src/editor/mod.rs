@@ -53,11 +53,6 @@ pub(crate) fn row(i: usize) -> (f32, (f32, f32)) {
     (bar + 46.0, (bar + 66.0, bar + 66.0 + TRAVEL))
 }
 
-/// Top and bottom of a graph with a one-line caption above it.
-pub(crate) fn graph_rows(i: usize) -> (f32, f32) {
-    (BAR_Y[i] + 56.0, BAR_Y[i] + 186.0)
-}
-
 /// How long a value set by the GUI is shown before trusting the parameter again.
 pub(crate) const PENDING_TIMEOUT: f64 = 1.0;
 
@@ -142,6 +137,9 @@ pub enum ControlKind {
     Field,
     Stepper,
     Selector,
+    /// Choice as a grid of cells; registered whole under the parameter ID and
+    /// per cell as `"<id>#<index>"`.
+    List,
     Switch,
     Button,
     Chip,
@@ -181,6 +179,9 @@ pub struct EditorState {
     pub(crate) wt: tabs::WtState,
     /// OSC tab wave displays showing only the current frame instead of the 3D stack.
     pub(crate) wave_flat: [bool; 2],
+    /// Envelope (0 = amp, 1 = mod) and LFO shown in the bottom half.
+    pub env_page: usize,
+    pub lfo_page: usize,
     /// Matrix row being dragged to a new position: (row, current slot).
     pub(crate) row_drag: Option<(usize, usize)>,
     scratch: graphs::Scratch,
@@ -204,6 +205,8 @@ impl EditorState {
             cc_pick: 74,
             wt: tabs::WtState::default(),
             wave_flat: [false; 2],
+            env_page: 0,
+            lfo_page: 0,
             row_drag: None,
             scratch: graphs::Scratch::default(),
         }

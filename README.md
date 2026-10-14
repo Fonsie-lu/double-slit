@@ -69,8 +69,9 @@ allocator armed; any allocation on the audio path aborts the test.
 Coloured section bars, faders with scales, stepped faders and graphs with drag
 handles, in the style of Fonsie Audio's other synths (Drift, the Alpha Juno
 clone). The top half shows the OSC | WT | FILTER | MATRIX | FX tabs; the bottom
-half always shows both envelopes, both LFOs, the master section, an output
-scope and the performance modulation sources.
+half always shows an envelope, an LFO, the master section with an output scope
+and the performance modulation sources. The OSC tab and the bottom half follow
+Serum 2 with knobs.
 
 - Faders, knobs, value fields and graph handles: drag (Shift for fine), mouse
   wheel, double-click resets. A hovered knob shows its value in place of its name.
@@ -91,10 +92,14 @@ scope and the performance modulation sources.
 - FILTER: drag the response curve sideways for cutoff (log axis) and up/down
   for resonance; the output and pre-filter spectra run behind it, and a second
   curve shows the cutoff the newest voice actually gets.
-- Envelopes: drag the handles - attack time, decay time and sustain level, release
-  time. A dot follows the newest voice.
-- Modulation: drag a source chip (MATRIX palette, the envelope and LFO bars, the
-  SOURCES section) onto any modulatable control to add a +50 % row. Right-click a
+- Bottom half: AMP ENV / MOD ENV and LFO 1 / LFO 2 tabs pick the envelope and
+  LFO shown; the round handle on each tab is that modulator's drag source.
+  Envelope graph: drag the handles - attack time, decay time and sustain level,
+  release time; a dot follows the newest voice. The LFO has its trigger mode and
+  shape as lists beside the graph and HZ / BPM below it (the unused one of RATE
+  and DIVISION is dimmed). Choice lists: click an entry.
+- Modulation: drag a source chip or handle (MATRIX palette, the envelope and LFO
+  tabs, the SOURCES strip) onto any modulatable control to add a +50 % row. Right-click a
   control to see, adjust or remove its rows or add a source. Modulated controls
   show their range in the modulation colour, brighter while the source moves.
 - MATRIX: source, target, amount, curve, mute and delete per row; drag the
@@ -144,8 +149,8 @@ builds.
   also exports VST3 (SPEC 1 lists VST3 as a non-goal). The VST3 bindings are
   GPL, hence the licence.
 - **GUI:** faders and graphs instead of knobs with arcs, as in the other Fonsie
-  Audio synths, except on the OSC tab, which follows Serum 2 with knobs; four
-  selectable themes instead of the fixed Tokyo Night palette.
+  Audio synths, except on the OSC tab and the bottom half, which follow Serum 2
+  with knobs; four selectable themes instead of the fixed Tokyo Night palette.
 - **Presets** are a browser in the header: nih-plug has no host program list.
 - **Voice info:** no CLAP `voice_info` extension (nih-plug only offers it
   together with polyphonic modulation).

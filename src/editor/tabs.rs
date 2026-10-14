@@ -6,8 +6,8 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
 
 use super::theme::Section;
-use super::widgets::{graph_bg, Nums, Steps, G, BIPOLAR_L, N10L, N10R};
-use super::{graph_rows, palette_sources, row, ControlKind, FocusKind, Popup, BAR_Y, BW};
+use super::widgets::{graph_bg, Nums, Steps, G, N10L, N10R};
+use super::{palette_sources, row, ControlKind, FocusKind, Popup, BAR_Y, BW};
 use crate::dsp::common::FRAME_SIZE;
 use crate::dsp::mod_matrix::{
     cc_source_index, mod_source_category, mod_source_display_name, mod_target_display_name, ModCurve,
@@ -18,6 +18,11 @@ use crate::dsp::wavetable::Wavetable;
 
 /// Width of each oscillator panel on the OSC tab.
 const OSC_W: f32 = 590.0;
+/// Width of the envelope and LFO panels, height of their graphs and the
+/// centre line of the knob row below them.
+const MOD_W: f32 = 504.0;
+const GRAPH_H: f32 = 236.0;
+const KNOB_ROW: f32 = BAR_Y[2] + 306.0;
 
 // ------------------------------------------------------------------ WT state
 
@@ -848,91 +853,133 @@ impl G<'_, '_> {
 
     // ---------------------------------------------------------- bottom half
 
+    /// The always-visible bottom half, laid out after Serum 2: an envelope
+    /// and an LFO panel, each with tabs that double as drag handles for their
+    /// source, large graphs and a knob row; the master section with the
+    /// scope; the performance sources along the bottom edge.
     pub(crate) fn bottom_half(&mut self) {
         let th = self.th;
-        self.bar(
-            BAR_Y[2],
-            &[
-                (16.0, 446.0, "AMP ENV", Section::Env),
-                (446.0, 876.0, "MOD ENV", Section::Env),
-                (876.0, BW - 12.0, "MASTER", Section::Master),
-            ],
-        );
-        self.bar(
-            BAR_Y[3],
-            &[
-                (16.0, 576.0, "LFO 1", Section::Lfo),
-                (576.0, 1136.0, "LFO 2", Section::Lfo),
-                (1136.0, BW - 12.0, "SOURCES", Section::Matrix),
-            ],
-        );
+        let y = BAR_Y[2];
+        let lfo_x = 16.0 + MOD_W + 8.0;
+        let master_x = lfo_x + MOD_W + 8.0;
         self.accent = th.accents[Section::Env as usize];
-        self.env_section(0, 16.0);
-        self.env_section(1, 446.0);
+        self.env_panel(16.0, y);
         self.accent = th.accents[Section::Lfo as usize];
-        self.lfo_section(0, 16.0);
-        self.lfo_section(1, 576.0);
+        self.lfo_panel(lfo_x, y);
         self.accent = th.accents[Section::Master as usize];
-        self.master_section(876.0);
+        self.master_panel(master_x, y);
         self.accent = th.accents[Section::Matrix as usize];
-        self.quick_sources(1136.0);
+        self.quick_sources(y + 362.0);
     }
 
-    fn env_section(&mut self, which: usize, x0: f32) {
-        let (l, sl) = row(2);
-        let (top, bottom) = graph_rows(2);
+    /// Modulator tabs: click a name to show that modulator, drag the round
+    /// handle onto a control to modulate it. Returns the selected page.
+    fn mod_tabs(&mut self, x0: f32, y: f32, key: &str, page: usize, tabs: [(&str, ModSource); 2], section: Section) -> usize {
+        let cv = self.cv;
+        let th = self.th;
+        let w = MOD_W / 2.0;
+        let mut page = page;
+        for (k, (name, src)) in tabs.into_iter().enumerate() {
+            let rect = cv.r(x0 + k as f32 * w + 1.5, y, w - 3.0, 22.0);
+            let tab_key = format!("modtab:{key}:{k}");
+            let resp = self.ui.interact(rect, Id::new(&tab_key), Sense::click());
+            self.register(&tab_key, ControlKind::Button, rect);
+            if resp.clicked() {
+                page = k;
+            }
+            let selected = page == k;
+            let fill = if selected {
+                th.bars[section as usize]
+            } else if resp.hovered() {
+                th.button_hover
+            } else {
+                th.button
+            };
+            self.pt.rect_filled(rect, cv.round(3.0), fill);
+            let ink = if selected { th.bar_text } else { th.text };
+            self.text(rect.left_center() + vec2(10.0 * cv.s, 0.5 * cv.s), Align2::LEFT_CENTER, name, 13.0, ink);
+            self.source_handle(src.index(), rect.right_center() - vec2(14.0 * cv.s, 0.0), ink);
+        }
+        page
+    }
+
+    /// Panel behind a knob row.
+    fn knob_panel(&self, x0: f32, w: f32) {
+        let cv = self.cv;
+        self.pt.rect_filled(cv.r(x0, KNOB_ROW - 28.0, w, 78.0), cv.round(4.0), self.th.slot.gamma_multiply(0.35));
+    }
+
+    /// Label under a non-knob control in a knob row.
+    fn row_label(&self, cx: f32, text: &str) {
+        self.text(self.cv.p(cx, KNOB_ROW + 30.0), Align2::CENTER_CENTER, text, 9.5, self.th.text);
+    }
+
+    fn env_panel(&mut self, x0: f32, y: f32) {
+        let tabs = [("AMP ENV", ModSource::EnvAmp), ("MOD ENV", ModSource::EnvMod)];
+        let page = self.st.env_page;
+        self.st.env_page = self.mod_tabs(x0, y, "env", page, tabs, Section::Env);
+        let which = self.st.env_page;
+        self.env_graph(which, self.cv.r(x0 + 8.0, y + 30.0, MOD_W - 16.0, GRAPH_H));
+
         let first = if which == 0 { ParamId::EnvAmpAttack } else { ParamId::EnvModAttack };
         let p = |o: usize| ParamId::from_index(first.index() + o);
-        for (t, name) in [(0.1, "ATTACK"), (0.36, "DECAY"), (0.62, "SUSTAIN"), (0.88, "RELEASE")] {
-            self.text(self.cv.p(x0 + 12.0 + 220.0 * t, l), Align2::CENTER_BOTTOM, name, 9.0, self.th.legend);
+        self.knob_panel(x0, MOD_W);
+        let knobs = ["ATTACK", "DECAY", "SUSTAIN", "RELEASE", "A CURVE", "D CURVE", "R CURVE", "VELOCITY"];
+        for (o, label) in knobs.into_iter().enumerate() {
+            self.knob(p(o), x0 + 36.0 + o as f32 * 62.0, KNOB_ROW, 15.0, label);
         }
-        let rect = self.cv.r(x0 + 12.0, top, 220.0, bottom - top);
-        self.env_graph(which, rect);
-        self.fader(p(4), x0 + 262.0, l, sl, "A\nCURVE", BIPOLAR_L, FocusKind::Plain);
-        self.fader(p(5), x0 + 306.0, l, sl, "D\nCURVE", Nums::None, FocusKind::Plain);
-        self.fader(p(6), x0 + 350.0, l, sl, "R\nCURVE", Nums::None, FocusKind::Plain);
-        self.fader(p(7), x0 + 394.0, l, sl, "VELO-\nCITY", N10R, FocusKind::Plain);
-        let src = if which == 0 { ModSource::EnvAmp } else { ModSource::EnvMod };
-        let chip = self.cv.r(x0 + 430.0 - 84.0, BAR_Y[2] + 3.0, 78.0, 16.0);
-        self.source_chip(src.index(), chip);
     }
 
-    fn lfo_section(&mut self, which: usize, x0: f32) {
-        let (l, sl) = row(3);
-        let (top, bottom) = graph_rows(3);
+    fn lfo_panel(&mut self, x0: f32, y: f32) {
+        let cv = self.cv;
+        let tabs = [("LFO 1", ModSource::Lfo1), ("LFO 2", ModSource::Lfo2)];
+        let page = self.st.lfo_page;
+        self.st.lfo_page = self.mod_tabs(x0, y, "lfo", page, tabs, Section::Lfo);
+        let which = self.st.lfo_page;
         let first = if which == 0 { ParamId::Lfo1Rate } else { ParamId::Lfo2Rate };
         let p = |o: usize| ParamId::from_index(first.index() + o);
-        let rect = self.cv.r(x0 + 12.0, top - 22.0, 140.0, bottom - top + 22.0);
-        self.lfo_graph(which, rect);
-        self.stepper(p(1), x0 + 200.0, l, sl, "SHAPE", Steps::Lfo);
-        self.fader(p(0), x0 + 244.0, l, sl, "RATE", Nums::None, FocusKind::Plain);
-        self.stepper(p(2), x0 + 314.0, l, sl, "SYNC", Steps::Text(&["FREE", "TEMPO"]));
-        self.selector(p(3), x0 + 330.0, sl.0 + 44.0, 60.0, "DIV");
-        self.stepper(p(4), x0 + 452.0, l, sl, "RETRIG", Steps::Text(&["FREE", "VOICE", "NOTE"]));
-        self.fader(p(5), x0 + 498.0, l, sl, "PHASE", Nums::None, FocusKind::Plain);
-        self.fader(p(6), x0 + 542.0, l, sl, "SMOOTH", N10R, FocusKind::Plain);
-        let src = if which == 0 { ModSource::Lfo1 } else { ModSource::Lfo2 };
-        let chip = self.cv.r(x0 + 560.0 - 84.0, BAR_Y[3] + 3.0, 78.0, 16.0);
-        self.source_chip(src.index(), chip);
+
+        self.text(cv.p(x0 + 10.0, y + 38.0), Align2::LEFT_CENTER, "TRIGGER", 9.0, self.th.legend);
+        self.segments(p(4), x0 + 8.0, y + 46.0, 88.0, 22.0, 1, Steps::Text(&["FREE", "VOICE", "NOTE"]));
+        self.text(cv.p(x0 + 10.0, y + 126.0), Align2::LEFT_CENTER, "SHAPE", 9.0, self.th.legend);
+        self.segments(p(1), x0 + 8.0, y + 134.0, 88.0, 26.0, 2, Steps::Lfo);
+        self.lfo_graph(which, cv.r(x0 + 104.0, y + 30.0, MOD_W - 112.0, GRAPH_H));
+
+        self.knob_panel(x0, MOD_W);
+        let tempo = self.plain(p(2)) > 0.5;
+        self.segments(p(2), x0 + 12.0, KNOB_ROW - 10.0, 80.0, 20.0, 2, Steps::Text(&["HZ", "BPM"]));
+        self.row_label(x0 + 52.0, "SYNC");
+        self.knob(p(0), x0 + 140.0, KNOB_ROW, 15.0, "RATE");
+        self.selector(p(3), x0 + 184.0, KNOB_ROW - 10.0, 96.0, "");
+        self.row_label(x0 + 232.0, "DIVISION");
+        // The control that does not apply in the current sync mode is dimmed.
+        let off = if tempo { cv.r(x0 + 114.0, KNOB_ROW - 26.0, 52.0, 66.0) } else { cv.r(x0 + 182.0, KNOB_ROW - 12.0, 100.0, 52.0) };
+        self.pt.rect_filled(off, cv.round(3.0), self.th.panel.gamma_multiply(0.6));
+        self.knob(p(5), x0 + 340.0, KNOB_ROW, 15.0, "PHASE");
+        self.knob(p(6), x0 + 420.0, KNOB_ROW, 15.0, "SMOOTH");
     }
 
-    fn master_section(&mut self, x0: f32) {
-        let (l, sl) = row(2);
-        self.fader(ParamId::MasterVolume, x0 + 40.0, l, sl, "VOLUME", N10L, FocusKind::Plain);
-        self.fader(ParamId::MasterPan, x0 + 86.0, l, sl, "PAN", Nums::None, FocusKind::Plain);
-        self.fader(ParamId::MasterTune, x0 + 132.0, l, sl, "TUNE", Nums::None, FocusKind::Plain);
-        self.fader(ParamId::MasterBendRange, x0 + 178.0, l, sl, "BEND", Nums::None, FocusKind::Plain);
-        self.fader(ParamId::MasterPolyphony, x0 + 224.0, l, sl, "VOICES", Nums::None, FocusKind::Plain);
-        self.stepper(ParamId::MasterOversampling, x0 + 290.0, l, sl, "OVER-\nSAMPLE", Steps::Text(&["1X", "2X", "4X"]));
-        self.fader(ParamId::MasterGlide, x0 + 336.0, l, sl, "GLIDE", N10R, FocusKind::Plain);
-        let (top, bottom) = graph_rows(2);
-        let rect = self.cv.r(x0 + 380.0, top - 20.0, BW - 12.0 - x0 - 392.0, bottom - top + 20.0);
-        self.scope(rect);
+    fn master_panel(&mut self, x0: f32, y: f32) {
+        let cv = self.cv;
+        let w = BW - 12.0 - x0;
+        self.bar(y, &[(x0, x0 + w, "MASTER", Section::Master)]);
+        self.scope(cv.r(x0 + 10.0, y + 33.0, w - 20.0, 132.0));
+        self.field(ParamId::MasterPolyphony, x0 + 8.0, y + 178.0, (w - 24.0) / 2.0, "VOICES");
+        self.field(ParamId::MasterBendRange, x0 + 16.0 + (w - 24.0) / 2.0, y + 178.0, (w - 24.0) / 2.0, "BEND");
+        self.text(cv.p(x0 + 10.0, y + 218.0), Align2::LEFT_CENTER, "OVERSAMPLING", 9.0, self.th.legend);
+        self.segments(ParamId::MasterOversampling, x0 + 112.0, y + 208.0, w - 120.0, 20.0, 3, Steps::Text(&["1X", "2X", "4X"]));
+
+        self.knob_panel(x0, w);
+        let knobs = [(ParamId::MasterVolume, "VOLUME"), (ParamId::MasterPan, "PAN"), (ParamId::MasterTune, "TUNE"), (ParamId::MasterGlide, "GLIDE")];
+        for (k, (id, label)) in knobs.into_iter().enumerate() {
+            self.knob(id, x0 + w * (0.125 + 0.25 * k as f32), KNOB_ROW, 15.0, label);
+        }
     }
 
-    /// Performance sources as chips, next to the LFOs (envelope and LFO chips
-    /// sit in their own section bars).
-    fn quick_sources(&mut self, x0: f32) {
+    /// Performance sources as chips along the bottom edge (the envelope and
+    /// LFO handles sit on their tabs).
+    fn quick_sources(&mut self, y: f32) {
+        let cv = self.cv;
         let skip = [ModSource::EnvAmp.index(), ModSource::EnvMod.index(), ModSource::Lfo1.index(), ModSource::Lfo2.index()];
         let sources: Vec<usize> = palette_sources(self.st.cc_pick)
             .into_iter()
@@ -941,8 +988,13 @@ impl G<'_, '_> {
             .take(14)
             .collect();
         let mut seen = Vec::new();
-        for (k, src) in sources.into_iter().filter(|s| if seen.contains(s) { false } else { seen.push(*s); true }).enumerate() {
-            let rect = self.cv.r(x0 + 10.0 + (k % 2) as f32 * 122.0, BAR_Y[3] + 32.0 + (k / 2) as f32 * 22.0, 116.0, 18.0);
+        let sources: Vec<usize> = sources.into_iter().filter(|s| if seen.contains(s) { false } else { seen.push(*s); true }).collect();
+        self.text(cv.p(20.0, y + 21.0), Align2::LEFT_CENTER, "SOURCES", 10.0, self.th.text);
+        let per_row = sources.len().div_ceil(2).max(1);
+        let (x0, x1) = (96.0, BW - 12.0);
+        let cell = (x1 - x0) / per_row as f32;
+        for (k, src) in sources.into_iter().enumerate() {
+            let rect = cv.r(x0 + (k % per_row) as f32 * cell, y + (k / per_row) as f32 * 22.0, cell - 6.0, 18.0);
             self.source_chip(src, rect);
         }
     }

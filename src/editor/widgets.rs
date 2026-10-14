@@ -59,7 +59,6 @@ pub enum Nums {
 
 pub const N10L: Nums = Nums::Left("10", "5", "0");
 pub const N10R: Nums = Nums::Right("10", "5", "0");
-pub const BIPOLAR_L: Nums = Nums::Left("+", "0", "-");
 
 /// Labels for the positions of a stepped fader, bottom position first.
 #[derive(Clone, Copy)]
@@ -481,6 +480,84 @@ impl G<'_, '_> {
                 color,
             );
         }
+    }
+
+    /// Choice parameter as a grid of cells, `cols` per row in value order
+    /// (Serum's mode lists and toggles). Clicking a cell selects its value.
+    #[allow(clippy::too_many_arguments)]
+    pub fn segments(&mut self, id: ParamId, x: f32, y: f32, w: f32, cell_h: f32, cols: usize, steps: Steps) {
+        let cv = self.cv;
+        let d = id.desc();
+        let count = d.steps.max(2);
+        let cell_w = w / cols as f32;
+        let whole = cv.r(x, y, w, count.div_ceil(cols) as f32 * cell_h);
+        self.register(&d.id_string, ControlKind::List, whole);
+        let current = (self.plain(id) - d.min).round() as usize;
+        for i in 0..count {
+            let rect = cv
+                .r(x + (i % cols) as f32 * cell_w, y + (i / cols) as f32 * cell_h, cell_w, cell_h)
+                .shrink(1.0 * cv.s);
+            let key = format!("{}#{i}", d.id_string);
+            let resp = self.ui.interact(rect, Id::new(&key), Sense::click());
+            self.register(&key, ControlKind::List, rect);
+            if resp.clicked() {
+                self.change_plain(id, d.min + i as f32);
+            }
+            if resp.hovered() {
+                let name = format!("{} {}", d.module, d.name);
+                self.set_focus(&name, d.format(d.min + i as f32), FocusKind::Plain);
+            }
+            let selected = i == current;
+            let fill = if selected { self.th.slot } else { self.th.slot.gamma_multiply(0.45) };
+            self.pt.rect_filled(rect, cv.round(2.0), fill);
+            if selected || resp.hovered() {
+                let edge = if selected { self.accent } else { self.th.scale };
+                self.pt.rect_stroke(rect, cv.round(2.0), Stroke::new(1.0 * cv.s, edge), StrokeKind::Inside);
+            }
+            let ink = if selected { self.accent } else { self.th.step_off };
+            match steps {
+                Steps::Text(t) => self.text(rect.center(), Align2::CENTER_CENTER, t.get(i).copied().unwrap_or(""), 9.0, ink),
+                Steps::Lfo => {
+                    let icon = Rect::from_center_size(rect.center(), vec2(rect.width() - 14.0 * cv.s, rect.height() * 0.45));
+                    let pts = sample_curve(icon, 1.0, |ph| lfo_shape(i, ph));
+                    self.pt.add(Shape::line(pts, Stroke::new(1.4 * cv.s, ink)));
+                }
+            }
+        }
+    }
+
+    /// Round drag handle for a modulation source, as on Serum's modulator
+    /// tabs. Dropping it on a modulatable control adds a matrix row there.
+    pub fn source_handle(&mut self, source: usize, c: Pos2, ink: Color32) {
+        let s = self.cv.s;
+        let key = format!("chip:{}", crate::dsp::mod_matrix::mod_source_id(source));
+        let rect = Rect::from_center_size(c, vec2(20.0, 20.0) * s);
+        let resp = self.ui.interact(rect, Id::new(&key), Sense::click_and_drag());
+        self.register(&key, ControlKind::Chip, rect);
+        if resp.drag_started() {
+            self.st.drag_source = Some(source);
+        }
+        let hot = resp.hovered() || resp.dragged();
+        if hot {
+            self.pt.circle_filled(c, 8.0 * s, self.th.modulation);
+            let name = mod_source_display_name(source).to_uppercase();
+            self.set_focus("DRAG ONTO A CONTROL TO MODULATE IT", name, FocusKind::Plain);
+        }
+        let ink = if hot { self.th.bar_text } else { ink };
+        // A ring with an arrowhead: "this drags out".
+        let pts: Vec<Pos2> = (0..=20)
+            .map(|k| {
+                let a = (0.15 + 1.55 * k as f32 / 20.0) * PI;
+                c + vec2(a.cos(), a.sin()) * 5.5 * s
+            })
+            .collect();
+        let end = pts[pts.len() - 1];
+        self.pt.add(Shape::line(pts, Stroke::new(1.6 * s, ink)));
+        self.pt.add(Shape::convex_polygon(
+            vec![end + vec2(-3.0, -2.0) * s, end + vec2(3.0, -2.0) * s, end + vec2(0.0, 2.5) * s],
+            ink,
+            Stroke::NONE,
+        ));
     }
 
     /// Fader with detents; positions are labelled with text or icons on the
