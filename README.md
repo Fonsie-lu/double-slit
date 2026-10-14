@@ -35,13 +35,17 @@ RUSTFLAGS="-C target-cpu=x86-64-v3" cargo xtask bundle double_slit --release
 Artifacts land in `target/bundled/` (`Double Slit.clap`, `Double Slit.vst3`).
 The unison loop has an AVX2+FMA path chosen at run time, so a build without
 `target-cpu` still runs anywhere x86_64; `x86-64-v3` is about 20 % faster on the
-heavy cases. Install:
+heavy cases. To build and install in one step:
 
 ```sh
-mkdir -p ~/.clap ~/.vst3
-cp "target/bundled/Double Slit.clap" ~/.clap/
-rm -rf "$HOME/.vst3/Double Slit.vst3" && cp -r "target/bundled/Double Slit.vst3" ~/.vst3/
+./install.sh               # symlink into ~/.clap and ~/.vst3; later rebuilds need no reinstall
+./install.sh --copy        # copy instead of symlink
+./install.sh --system      # copy to /usr/lib/clap and /usr/lib/vst3, via sudo
+./install.sh --uninstall   # remove (combine with --system for the system folders)
 ```
+
+`--clap` or `--vst3` limits the install to one format, and `--no-build` installs
+the existing bundles. `TARGET_CPU= ./install.sh` builds without `target-cpu`.
 
 ## Development
 

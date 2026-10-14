@@ -14,6 +14,7 @@ cargo clippy --all-targets
 cargo run --release --example bench          # SPEC 9 performance cases (print % of one core)
 
 RUSTFLAGS="-C target-cpu=x86-64-v3" cargo xtask bundle double_slit --release   # -> target/bundled/
+./install.sh                                 # build, symlink into ~/.clap and ~/.vst3 (--help for options)
 
 cargo run --release --example gui_preview    # editor without a host
 DOUBLE_SLIT_DEMO=1 DOUBLE_SLIT_TAB=0..4 DOUBLE_SLIT_THEME=0..3 cargo run --release --example gui_preview
