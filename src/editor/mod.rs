@@ -137,6 +137,9 @@ pub type PreviewStore = Arc<Mutex<HashMap<ParamPtr, f32>>>;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ControlKind {
     Fader,
+    Knob,
+    /// Value box dragged vertically (octave, semitone, phase).
+    Field,
     Stepper,
     Selector,
     Switch,
@@ -176,6 +179,8 @@ pub struct EditorState {
     /// CC number offered by the MATRIX palette's CC chip.
     pub(crate) cc_pick: u8,
     pub(crate) wt: tabs::WtState,
+    /// OSC tab wave displays showing only the current frame instead of the 3D stack.
+    pub(crate) wave_flat: [bool; 2],
     /// Matrix row being dragged to a new position: (row, current slot).
     pub(crate) row_drag: Option<(usize, usize)>,
     scratch: graphs::Scratch,
@@ -198,6 +203,7 @@ impl EditorState {
             preset: None,
             cc_pick: 74,
             wt: tabs::WtState::default(),
+            wave_flat: [false; 2],
             row_drag: None,
             scratch: graphs::Scratch::default(),
         }

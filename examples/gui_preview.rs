@@ -3,6 +3,7 @@
 //!
 //!   cargo run --release --example gui_preview
 //!   DOUBLE_SLIT_THEME=0..3 DOUBLE_SLIT_TAB=0..4 cargo run --release --example gui_preview
+//!   DOUBLE_SLIT_PRESET=n                  starts with factory preset n loaded
 //!
 //! With `DOUBLE_SLIT_DEMO=1` the engine plays a repeating chord in a
 //! background thread at real-time pace (no audio output), following every
@@ -56,6 +57,14 @@ fn main() {
     }
     let shared = Arc::new(SynthShared::default());
     let store = PreviewStore::default();
+    let preset = std::env::var("DOUBLE_SLIT_PRESET").ok().and_then(|v| v.parse().ok());
+    if let Some(data) = preset.and_then(double_slit::dsp::presets::build_factory_preset) {
+        let values = double_slit::dsp::state::apply_patch_data(&data, &shared);
+        let mut store = store.lock().unwrap();
+        for id in ParamId::all() {
+            store.insert(params.get(id).ptr(), id.desc().to_normalized(values[id.index()]));
+        }
+    }
     if std::env::var("DOUBLE_SLIT_DEMO").is_ok() {
         let (shared, params, store) = (shared.clone(), params.clone(), store.clone());
         std::thread::spawn(move || demo(shared, params, store));

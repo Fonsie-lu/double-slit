@@ -16,6 +16,9 @@ use crate::dsp::mod_matrix::{
 use crate::dsp::params::{ParamId, CUSTOM_TABLE_CHOICE, FILTER_TYPES};
 use crate::dsp::wavetable::Wavetable;
 
+/// Width of each oscillator panel on the OSC tab.
+const OSC_W: f32 = 590.0;
+
 // ------------------------------------------------------------------ WT state
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -88,83 +91,136 @@ fn file_dialog(save: bool, suggested: PathBuf) -> FileJob {
 impl G<'_, '_> {
     // ------------------------------------------------------------------ OSC
 
+    /// OSC A on the left and OSC B on the right (SPEC 6.2), each with its
+    /// table, pitch, wavetable display and knobs; between them what passes
+    /// from A to B, the sub / noise oscillator and the level meters.
     pub(crate) fn osc_tab(&mut self) {
         let th = self.th;
-        self.bar(
-            BAR_Y[0],
-            &[
-                (16.0, 944.0, "OSC A", Section::OscA),
-                (944.0, 1150.0, "OSC C  SUB / NOISE", Section::OscC),
-                (1150.0, BW - 12.0, "LEVELS", Section::Master),
-            ],
-        );
-        self.bar(BAR_Y[1], &[(16.0, BW - 12.0, "OSC B", Section::OscB)]);
         self.accent = th.accents[Section::OscA as usize];
-        self.osc(0, 16.0);
+        self.osc_panel(0, 16.0);
         self.accent = th.accents[Section::OscB as usize];
-        self.osc(1, 16.0);
+        self.osc_panel(1, BW - 12.0 - OSC_W);
 
+        let (x0, x1) = (16.0 + OSC_W + 8.0, BW - 12.0 - OSC_W - 8.0);
+        let cx = (x0 + x1) * 0.5;
+        self.gradient_bar(x0, x1, BAR_Y[0], "A  →  B", Section::OscA, Section::OscB);
+        self.accent = th.accents[Section::OscB as usize];
+        self.text(self.cv.p(x0 + 4.0, 116.0), Align2::LEFT_CENTER, "SYNC", 9.0, th.legend);
+        self.selector(ParamId::OscBSyncMode, x0 + 36.0, 106.0, x1 - x0 - 36.0, "");
+        self.knob(ParamId::OscBSyncRatio, cx - 56.0, 160.0, 16.0, "RATIO");
+        self.knob(ParamId::OscBFmIndex, cx, 160.0, 16.0, "FM");
+        self.knob(ParamId::OscBAmIndex, cx + 56.0, 160.0, 16.0, "AM");
+
+        self.bar(214.0, &[(x0, x1, "SUB / NOISE", Section::OscC)]);
         self.accent = th.accents[Section::OscC as usize];
-        let (l, sl) = row(0);
-        self.stepper(ParamId::OscCMode, 1010.0, l, sl, "MODE", Steps::Text(&["SINE", "TRI", "WHITE", "PINK"]));
-        self.fader(ParamId::OscCLevel, 1058.0, l, sl, "LEVEL", Nums::None, FocusKind::Plain);
-        self.fader(ParamId::OscCPitch, 1104.0, l, sl, "PITCH", BIPOLAR_L, FocusKind::Plain);
+        self.text(self.cv.p(x0 + 4.0, 254.0), Align2::LEFT_CENTER, "TYPE", 9.0, th.legend);
+        self.selector(ParamId::OscCMode, x0 + 36.0, 244.0, x1 - x0 - 36.0, "");
+        self.knob(ParamId::OscCLevel, cx - 36.0, 298.0, 16.0, "LEVEL");
+        self.knob(ParamId::OscCPitch, cx + 36.0, 298.0, 16.0, "PITCH");
 
-        self.accent = th.accents[Section::Master as usize];
-        self.osc_meters(1180.0, l, sl);
+        self.bar(352.0, &[(x0, x1, "LEVELS", Section::Master)]);
+        self.osc_meters(x0, x1, 388.0);
     }
 
-    /// One oscillator: wave display, on switch, table, then the faders. Osc B
-    /// adds noise, sync, FM and AM.
-    fn osc(&mut self, osc: usize, x0: f32) {
-        let r = osc;
-        let (l, sl) = row(r);
+    /// One oscillator in the style of Serum's: header with the power switch,
+    /// table and pitch, the wavetable display, phase (and noise for B), knobs.
+    fn osc_panel(&mut self, osc: usize, x0: f32) {
+        let cv = self.cv;
+        let section = if osc == 0 { Section::OscA } else { Section::OscB };
         let base = if osc == 0 { ParamId::OscAOn } else { ParamId::OscBOn };
         let p = |o: usize| ParamId::from_index(base.index() + o);
-        let bar = BAR_Y[r];
-        let display = self.cv.r(x0 + 12.0, bar + 30.0, 180.0, 160.0);
-        self.wave_display(osc, display);
-        self.switch(p(0), x0 + 234.0, l, "ON");
-        let level = self.st.shared.feedback.osc_meters[osc].load(Relaxed);
-        self.led(self.cv.p(x0 + 276.0, l + 14.0), (level * 2.0).min(1.0));
-        self.selector(p(1), x0 + 206.0, bar + 152.0, 128.0, "TABLE");
-        self.fader(p(2), x0 + 364.0, l, sl, "WT POS", N10L, FocusKind::Plain);
-        self.fader(p(3), x0 + 410.0, l, sl, "LEVEL", Nums::None, FocusKind::Plain);
-        self.fader(p(4), x0 + 456.0, l, sl, "PAN", Nums::None, FocusKind::Plain);
-        self.stepper(p(5), x0 + 522.0, l, sl, "OCT", Steps::Text(&["-3", "-2", "-1", "0", "+1", "+2", "+3"]));
-        self.fader(p(6), x0 + 568.0, l, sl, "SEMI", Nums::None, FocusKind::Plain);
-        self.fader(p(7), x0 + 614.0, l, sl, "FINE", Nums::None, FocusKind::Plain);
-        self.fader(p(8), x0 + 660.0, l, sl, "UNISON", Nums::None, FocusKind::Plain);
-        self.fader(p(9), x0 + 706.0, l, sl, "DETUNE", Nums::None, FocusKind::Plain);
-        self.fader(p(10), x0 + 752.0, l, sl, "SPREAD", Nums::None, FocusKind::Plain);
-        self.fader(p(11), x0 + 798.0, l, sl, "BLEND", Nums::None, FocusKind::Plain);
-        self.fader(p(12), x0 + 844.0, l, sl, "PHASE", Nums::None, FocusKind::Plain);
-        self.stepper(p(13), x0 + 914.0, l, sl, "PHASE\nMODE", Steps::Text(&["FREE", "RAND", "RESET"]));
+        let w = OSC_W;
+        self.osc_header(osc, x0, section);
+
+        self.selector(p(1), x0 + 8.0, 104.0, 290.0, "");
+        self.field(p(5), x0 + 306.0, 104.0, 88.0, "OCT");
+        self.field(p(6), x0 + 400.0, 104.0, 88.0, "SEMI");
+        self.field(p(7), x0 + 494.0, 104.0, w - 502.0, "FINE");
+
+        self.wave_display(osc, cv.r(x0 + 8.0, 132.0, w - 16.0, 234.0));
+
+        let y = 372.0;
+        self.field(p(12), x0 + 8.0, y, 110.0, "PHASE");
+        self.text(cv.p(x0 + 130.0, y + 10.0), Align2::LEFT_CENTER, "START", 9.0, self.th.legend);
+        self.selector(p(13), x0 + 166.0, y, 110.0, "");
         if osc == 1 {
-            self.stepper(ParamId::OscBNoiseMode, x0 + 990.0, l, sl, "NOISE", Steps::Text(&["OFF", "WHITE", "PINK"]));
-            self.stepper(ParamId::OscBSyncMode, x0 + 1066.0, l, sl, "SYNC", Steps::Text(&["OFF", "OSC A", "SELF"]));
-            self.fader(ParamId::OscBSyncRatio, x0 + 1116.0, l, sl, "SYNC\nRATIO", Nums::None, FocusKind::Plain);
-            self.fader(ParamId::OscBFmIndex, x0 + 1162.0, l, sl, "FM\nFROM A", Nums::None, FocusKind::Plain);
-            self.fader(ParamId::OscBAmIndex, x0 + 1208.0, l, sl, "AM\nFROM A", N10R, FocusKind::Plain);
+            self.text(cv.p(x0 + 290.0, y + 10.0), Align2::LEFT_CENTER, "NOISE", 9.0, self.th.legend);
+            self.selector(ParamId::OscBNoiseMode, x0 + 330.0, y, 110.0, "");
+        }
+
+        self.pt.rect_filled(cv.r(x0, 400.0, w, 86.0), cv.round(4.0), self.th.slot.gamma_multiply(0.35));
+        let knobs = [(2, "WT POS"), (8, "UNISON"), (9, "DETUNE"), (10, "SPREAD"), (11, "BLEND"), (4, "PAN"), (3, "LEVEL")];
+        for (k, (o, label)) in knobs.into_iter().enumerate() {
+            self.knob(p(o), x0 + 46.0 + k as f32 * 83.0, 432.0, 17.0, label);
         }
     }
 
-    /// Per-oscillator output meters (SPEC 6.3 "per-osc level LEDs").
-    fn osc_meters(&mut self, x: f32, label_y: f32, slot: (f32, f32)) {
+    /// Section bar with the power switch and level LED on the left and the
+    /// oscillator type on the right.
+    fn osc_header(&mut self, osc: usize, x0: f32, section: Section) {
         let cv = self.cv;
-        let (y0, y1) = slot;
+        let th = self.th;
+        let id = if osc == 0 { ParamId::OscAOn } else { ParamId::OscBOn };
+        let bar = cv.r(x0 + 1.5, BAR_Y[0], OSC_W - 3.0, 22.0);
+        self.pt.rect_filled(bar, cv.round(3.0), th.bars[section as usize]);
+
+        let hit = cv.r(x0 + 4.0, BAR_Y[0], 96.0, 22.0);
+        let resp = self.ui.interact(hit, Id::new(("osc-on", osc)), Sense::click());
+        self.register(&id.desc().id_string, ControlKind::Switch, hit);
+        let on = self.plain(id) > 0.5;
+        if resp.clicked() {
+            self.change_plain(id, if on { 0.0 } else { 1.0 });
+        }
+        if resp.hovered() {
+            let v = self.value_text(id);
+            self.set_focus(&format!("{} ON", id.desc().module), v, FocusKind::Plain);
+        }
+        let square = cv.r(x0 + 9.0, BAR_Y[0] + 4.0, 14.0, 14.0);
+        self.pt.rect_filled(square, cv.round(2.0), th.bar_text);
+        self.pt.rect_filled(square.shrink(2.5 * cv.s), cv.round(1.0), if on { th.led } else { th.led_off });
+        let title = if osc == 0 { "OSC A" } else { "OSC B" };
+        self.text(cv.p(x0 + 32.0, BAR_Y[0] + 11.5), Align2::LEFT_CENTER, title, 15.0, th.bar_text);
+        let level = self.st.shared.feedback.osc_meters[osc].load(Relaxed);
+        self.led(cv.p(x0 + 102.0, BAR_Y[0] + 11.0), if on { (level * 2.0).min(1.0) } else { 0.0 });
+
+        let noise = osc == 1 && self.plain(ParamId::OscBNoiseMode) > 0.5;
+        let kind = cv.r(x0 + OSC_W - 150.0, BAR_Y[0] + 3.0, 144.0, 16.0);
+        self.pt.rect_filled(kind, cv.round(2.0), th.slot);
+        let text = if noise { "NOISE" } else { "WAVETABLE" };
+        self.text(kind.center(), Align2::CENTER_CENTER, text, 9.5, self.accent);
+    }
+
+    /// Section bar fading from one section colour to another.
+    fn gradient_bar(&self, x0: f32, x1: f32, y: f32, title: &str, from: Section, to: Section) {
+        let cv = self.cv;
+        let r = cv.r(x0 + 1.5, y, x1 - x0 - 3.0, 22.0);
+        let (a, b) = (self.th.bars[from as usize], self.th.bars[to as usize]);
+        let mut mesh = nih_plug_egui::egui::Mesh::default();
+        mesh.colored_vertex(r.left_top(), a);
+        mesh.colored_vertex(r.right_top(), b);
+        mesh.colored_vertex(r.right_bottom(), b);
+        mesh.colored_vertex(r.left_bottom(), a);
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(0, 2, 3);
+        self.pt.add(Shape::mesh(mesh));
+        self.text(r.center(), Align2::CENTER_CENTER, title, 15.0, self.th.bar_text);
+    }
+
+    /// Per-oscillator and output meters (SPEC 6.3 "per-osc level LEDs").
+    fn osc_meters(&mut self, x0: f32, x1: f32, y: f32) {
+        let cv = self.cv;
         let fb = &self.st.shared.feedback;
         let values = [fb.osc_meters[0].load(Relaxed), fb.osc_meters[1].load(Relaxed), fb.meters[0].load(Relaxed).max(fb.meters[1].load(Relaxed))];
         for (k, (name, v)) in ["OSC A", "OSC B", "OUT"].iter().zip(values).enumerate() {
-            let cx = x + k as f32 * 64.0;
-            self.label(cx, label_y, name);
+            let yy = y + k as f32 * 28.0;
+            self.text(cv.p(x0 + 4.0, yy), Align2::LEFT_CENTER, name, 9.0, self.th.legend);
+            let (m0, m1) = (x0 + 48.0, x1 - 4.0);
+            self.pt.rect_filled(cv.r(m0, yy - 4.0, m1 - m0, 8.0), cv.round(2.0), self.th.slot);
             let db = 20.0 * v.max(1.0e-6).log10();
             let t = ((db + 60.0) / 60.0).clamp(0.0, 1.0);
-            self.pt.rect_filled(cv.r(cx - 4.0, y0, 8.0, y1 - y0), cv.round(2.0), self.th.slot);
-            let h = t * (y1 - y0);
-            if h > 0.3 {
+            if t > 0.0 {
                 let color = if v > 1.0 { self.th.clip } else { self.th.led };
-                self.pt.rect_filled(cv.r(cx - 4.0, y1 - h, 8.0, h), cv.round(2.0), color);
+                self.pt.rect_filled(cv.r(m0, yy - 4.0, t * (m1 - m0), 8.0), cv.round(2.0), color);
             }
         }
     }

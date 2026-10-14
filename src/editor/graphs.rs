@@ -11,10 +11,14 @@ use crate::dsp::fft::Fft;
 use crate::dsp::filters::MultiFilter;
 use crate::dsp::params::{FilterType, ParamId};
 use crate::dsp::shared::AnalyzerRing;
+use crate::dsp::wavetable::Wavetable;
 
 const F_MIN: f32 = 20.0;
 const F_MAX: f32 = 20_000.0;
 const ANALYZER_SIZE: usize = 2048;
+/// Frames drawn at most in the 3D wavetable view, and points per frame.
+const WAVE_SLICES: usize = 48;
+const WAVE_POINTS: usize = 128;
 
 /// GUI-side buffers for the analyser and scope, reused every frame.
 pub struct Scratch {
@@ -25,6 +29,9 @@ pub struct Scratch {
     /// Smoothed magnitudes in dB, so the spectrum moves calmly.
     wet_db: Vec<f32>,
     dry_db: Vec<f32>,
+    /// Display frames of each oscillator's table for the 3D view, keyed on
+    /// the table's content hash so they are only rebuilt when it changes.
+    slices: [(Option<u64>, Vec<Vec<f32>>); 2],
 }
 
 impl Default for Scratch {
@@ -36,6 +43,7 @@ impl Default for Scratch {
             dry: Vec::new(),
             wet_db: vec![-120.0; ANALYZER_SIZE / 2],
             dry_db: vec![-120.0; ANALYZER_SIZE / 2],
+            slices: Default::default(),
         }
     }
 }
@@ -401,14 +409,15 @@ impl G<'_, '_> {
         self.pt.add(Shape::line(dry, Stroke::new(0.8 * self.cv.s, self.th.legend.gamma_multiply(0.5))));
     }
 
-    /// The current frame of an oscillator's table as a filled wave, with the
-    /// neighbouring frames stacked faintly behind it. While notes sound it
-    /// follows the frame actually being played (SPEC 6.3: the table breathes).
-    /// Drag sideways to scrub the WT position; drop a source to modulate it.
+    /// Wavetable display of an oscillator (SPEC 6.2, 6.3): every frame of
+    /// the table stacked in depth with the current one highlighted, or only
+    /// the current frame in 2D. While notes sound it follows the frame
+    /// actually being played, so the table breathes with the sound. Drag
+    /// sideways or up to scrub the WT position; drop a source to modulate it.
+    /// The pencil opens the table in the WT editor.
     pub(crate) fn wave_display(&mut self, osc: usize, rect: Rect) {
         let s = self.cv.s;
         let pos_id = if osc == 0 { ParamId::OscAWtPos } else { ParamId::OscBWtPos };
-        let level_id = if osc == 0 { ParamId::OscALevel } else { ParamId::OscBLevel };
         let eid = Id::new(("wave", osc));
         let resp = self.ui.interact(rect, eid, Sense::click_and_drag());
         self.register(&format!("wave:{osc}"), ControlKind::Graph, rect);
@@ -420,11 +429,15 @@ impl G<'_, '_> {
         }
         if resp.dragged() {
             let start: f32 = self.ui.data(|d| d.get_temp(eid)).unwrap_or(0.0);
-            let v = start + self.drag_offset().x / rect.width();
-            self.send(pos_id, v);
+            let d = self.drag_offset();
+            self.send(pos_id, start + (d.x - d.y) / rect.width());
         }
         if resp.drag_stopped() {
             self.end(pos_id);
+        }
+        if resp.double_clicked() {
+            let def = self.p.get(pos_id).default_normalized();
+            self.change(pos_id, def);
         }
         if resp.hovered() || resp.dragged() {
             let v = self.value_text(pos_id);
@@ -442,54 +455,151 @@ impl G<'_, '_> {
             self.plain(pos_id) / 100.0
         };
         let current = ((pos * (frames.saturating_sub(1)) as f32).round() as usize).min(frames - 1);
-        let inner = rect.shrink2(vec2(10.0, 14.0) * s);
-        let points = 128;
-        // Stacked neighbours, offset up and right like a 3D morph view.
-        let depth = 6.min(frames);
-        for k in (1..depth).rev() {
-            let f = (current + k * (frames / depth).max(1)) % frames;
-            let off = vec2(k as f32 * 5.0, -(k as f32) * 4.0) * s;
-            let data = table.display_frame(f, points);
-            let pts: Vec<Pos2> = data
-                .iter()
-                .enumerate()
-                .map(|(i, v)| {
-                    pos2(
-                        inner.left() + inner.width() * 0.85 * i as f32 / (points - 1) as f32,
-                        inner.center().y - v * inner.height() * 0.38,
-                    ) + off
-                })
-                .collect();
-            self.pt.add(Shape::line(pts, Stroke::new(0.8 * s, self.accent.gamma_multiply(0.18))));
+        let noise = if osc == 1 { self.plain(ParamId::OscBNoiseMode).round() as usize } else { 0 };
+        let inner = rect.shrink2(vec2(14.0, 16.0) * s);
+        let caption = if noise > 0 {
+            self.noise_view(inner, noise == 2);
+            if noise == 2 { "PINK NOISE".to_owned() } else { "WHITE NOISE".to_owned() }
+        } else {
+            if self.st.wave_flat[osc] || frames < 2 {
+                self.wave_flat_view(&table, inner, current);
+            } else {
+                self.wave_stack_view(osc, &table, inner, current);
+            }
+            format!("{}  {}/{}", table.name().to_uppercase(), current + 1, frames)
+        };
+        self.text(rect.left_top() + vec2(8.0, 6.0) * s, Align2::LEFT_TOP, &caption, 9.0, self.th.legend);
+
+        // Position along the bottom edge, with the modulation range.
+        let y = rect.bottom() - 6.0 * s;
+        let (x0, x1) = (rect.left() + 8.0 * s, rect.right() - 8.0 * s);
+        self.pt.line_segment([pos2(x0, y), pos2(x1, y)], Stroke::new(1.0 * s, self.th.scale));
+        if let Some((lo, hi, activity)) = self.mod_extent(pos_id) {
+            let color = self.th.modulation.gamma_multiply(0.55 + 0.45 * activity.clamp(0.0, 1.0));
+            self.pt.line_segment([pos2(x0 + (x1 - x0) * lo, y), pos2(x0 + (x1 - x0) * hi, y)], Stroke::new(2.5 * s, color));
         }
-        let level = self.plain(level_id);
-        let data = table.display_frame(current, points);
+        self.pt.circle_filled(pos2(x0 + (x1 - x0) * pos.clamp(0.0, 1.0), y), 3.0 * s, self.th.wave_current);
+
+        if noise == 0 {
+            let c = self.cv.to_canvas(rect.right_top());
+            let flat = self.st.wave_flat[osc];
+            let help = if flat { "SHOW ALL FRAMES" } else { "SHOW THE CURRENT FRAME ONLY" };
+            if self.button(&format!("wave-view:{osc}"), c.x - 78.0, c.y + 6.0, 28.0, if flat { "3D" } else { "2D" }, false, help).clicked() {
+                self.st.wave_flat[osc] = !flat;
+            }
+            let edit = self.button(&format!("wave-edit:{osc}"), c.x - 44.0, c.y + 6.0, 36.0, "", false, "EDIT THIS TABLE IN THE WT EDITOR");
+            self.pencil(edit.rect.center());
+            if edit.clicked() {
+                self.st.wt.slot = osc;
+                self.st.wt.edit = None;
+                self.st.tab = super::Tab::Wt;
+            }
+        }
+    }
+
+    /// All frames (up to [`WAVE_SLICES`]) in an oblique projection, front
+    /// frame at the bottom left, the last frame at the back. The current
+    /// frame is drawn on top in its own colour.
+    fn wave_stack_view(&mut self, osc: usize, table: &Wavetable, inner: Rect, current: usize) {
+        let s = self.cv.s;
+        let frames = table.num_frames();
+        let n = frames.min(WAVE_SLICES);
+        let hash = table.content_hash();
+        if self.st.scratch.slices[osc].0 != Some(hash) {
+            let slices = (0..n)
+                .map(|k| table.display_frame(k * (frames - 1) / (n - 1), WAVE_POINTS))
+                .collect();
+            self.st.scratch.slices[osc] = (Some(hash), slices);
+        }
+
+        let (w, h) = (inner.width(), inner.height());
+        let depth = vec2(0.26 * w, -0.42 * h);
+        let wave_w = w - depth.x;
+        let amp = 0.27 * h;
+        let front = pos2(inner.left(), inner.bottom() - amp);
+        let point = |d: f32, i: usize, v: f32| {
+            front + depth * d + vec2(wave_w * i as f32 / (WAVE_POINTS - 1) as f32, -v * amp)
+        };
+        let line = |data: &[f32], d: f32| -> Vec<Pos2> { data.iter().enumerate().map(|(i, v)| point(d, i, *v)).collect() };
+
+        // Floor of the stack.
+        let floor = self.th.scale.gamma_multiply(0.6);
+        let corners = [front, front + vec2(wave_w, 0.0), front + vec2(wave_w, 0.0) + depth, front + depth];
+        for k in 0..4 {
+            self.pt.line_segment([corners[k], corners[(k + 1) % 4]], Stroke::new(0.8 * s, floor));
+        }
+
+        let slices = std::mem::take(&mut self.st.scratch.slices[osc].1);
+        for (k, data) in slices.iter().enumerate().rev() {
+            let d = k as f32 / (n - 1) as f32;
+            let pts = line(data, d);
+            fill_under(&self.pt, &pts, front.y + depth.y * d, self.accent.gamma_multiply(0.04));
+            let near = 1.0 - d;
+            self.pt.add(Shape::line(pts, Stroke::new(0.9 * s, self.accent.gamma_multiply(0.18 + 0.32 * near))));
+        }
+        self.st.scratch.slices[osc].1 = slices;
+
+        let d = current as f32 / (frames - 1) as f32;
+        let pts = line(&table.display_frame(current, WAVE_POINTS), d);
+        fill_under(&self.pt, &pts, front.y + depth.y * d, self.th.wave_current.gamma_multiply(0.22));
+        self.pt.add(Shape::line(pts, Stroke::new(2.0 * s, self.th.wave_current)));
+        // Where the current frame sits along the depth axis.
+        let edge = front + vec2(wave_w, 0.0);
+        self.pt.line_segment([edge + depth * d, edge + depth * d + vec2(-6.0, 0.0) * s], Stroke::new(1.2 * s, self.th.wave_current));
+    }
+
+    /// The current frame large, with neighbouring frames faintly behind it.
+    fn wave_flat_view(&mut self, table: &Wavetable, inner: Rect, current: usize) {
+        let s = self.cv.s;
+        let frames = table.num_frames();
         let mid = inner.center().y;
-        let pts: Vec<Pos2> = data
-            .iter()
-            .enumerate()
-            .map(|(i, v)| {
-                pos2(
-                    inner.left() + inner.width() * 0.85 * i as f32 / (points - 1) as f32,
-                    mid - v * inner.height() * 0.38 * (0.25 + 0.75 * level.min(1.0)),
-                )
+        let amp = inner.height() * 0.45;
+        let line = |data: &[f32]| -> Vec<Pos2> {
+            data.iter()
+                .enumerate()
+                .map(|(i, v)| pos2(inner.left() + inner.width() * i as f32 / (WAVE_POINTS - 1) as f32, mid - v * amp))
+                .collect()
+        };
+        self.pt.line_segment([pos2(inner.left(), mid), pos2(inner.right(), mid)], Stroke::new(0.8 * s, self.th.scale));
+        for k in [-2isize, -1, 1, 2] {
+            let f = current as isize + k * (frames as isize / 16).max(1);
+            if f >= 0 && (f as usize) < frames {
+                let pts = line(&table.display_frame(f as usize, WAVE_POINTS));
+                self.pt.add(Shape::line(pts, Stroke::new(0.8 * s, self.accent.gamma_multiply(0.3))));
+            }
+        }
+        let pts = line(&table.display_frame(current, WAVE_POINTS));
+        fill_under(&self.pt, &pts, mid, self.th.wave_current.gamma_multiply(0.22));
+        self.pt.add(Shape::line(pts, Stroke::new(2.0 * s, self.th.wave_current)));
+    }
+
+    /// Osc B in noise mode: a fixed burst of white or (smoother) pink noise.
+    fn noise_view(&mut self, inner: Rect, pink: bool) {
+        let s = self.cv.s;
+        let mut rng = crate::dsp::common::Rng::new(if pink { 2 } else { 1 });
+        let n = 240;
+        let mut v = 0.0;
+        let pts: Vec<Pos2> = (0..n)
+            .map(|i| {
+                let white = rng.next_bipolar();
+                v = if pink { 0.6 * v + 0.4 * white * 1.8 } else { white };
+                let t = i as f32 / (n - 1) as f32;
+                // A soft envelope so the burst reads as a sound, not a box.
+                let env = (t * std::f32::consts::PI).sin().powf(0.4);
+                pos2(inner.left() + inner.width() * t, inner.center().y - v.clamp(-1.0, 1.0) * env * inner.height() * 0.45)
             })
             .collect();
-        fill_under(&self.pt, &pts, mid, self.accent.gamma_multiply(0.22));
-        self.pt.add(Shape::line(pts, Stroke::new(1.6 * s, self.accent)));
-        // Position strip along the bottom edge.
-        let y = rect.bottom() - 5.0 * s;
-        self.pt.line_segment([pos2(inner.left(), y), pos2(inner.right(), y)], Stroke::new(1.0 * s, self.th.scale));
-        let x = inner.left() + inner.width() * pos.clamp(0.0, 1.0);
-        self.pt.circle_filled(pos2(x, y), 3.0 * s, self.accent);
-        if let Some((lo, hi, _)) = self.mod_extent(pos_id) {
-            self.pt.line_segment(
-                [pos2(inner.left() + inner.width() * lo, y), pos2(inner.left() + inner.width() * hi, y)],
-                Stroke::new(2.5 * s, self.th.modulation),
-            );
-        }
-        let caption = format!("{}  {}/{}", table.name().to_uppercase(), current + 1, frames);
-        self.text(rect.left_top() + vec2(6.0, 4.0) * s, Align2::LEFT_TOP, &caption, 8.0, self.th.legend);
+        self.pt.add(Shape::line(pts, Stroke::new(1.0 * s, self.accent)));
+    }
+
+    /// Pencil icon for the edit button.
+    fn pencil(&self, c: Pos2) {
+        let s = self.cv.s;
+        let tip = c + vec2(-6.0, 6.0) * s;
+        let (along, across) = (vec2(1.0, -1.0) * (0.707 * s), vec2(1.0, 1.0) * (0.707 * s));
+        let ink = self.th.text;
+        self.pt.add(Shape::convex_polygon(vec![tip, tip + along * 4.5 + across * 2.0, tip + along * 4.5 - across * 2.0], ink, Stroke::NONE));
+        self.pt.line_segment([tip + along * 5.5, tip + along * 15.0], Stroke::new(4.0 * s, ink));
     }
 
     /// Output oscilloscope from the post-FX analyser ring, triggered on a

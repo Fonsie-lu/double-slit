@@ -58,6 +58,7 @@ cargo run --release --example bench         # SPEC 9 performance cases
 # the engine (no audio output) so the live displays move.
 cargo run --release --example gui_preview
 DOUBLE_SLIT_DEMO=1 DOUBLE_SLIT_TAB=2 DOUBLE_SLIT_THEME=0 cargo run --release --example gui_preview
+DOUBLE_SLIT_PRESET=13 cargo run --release --example gui_preview   # start with a factory preset
 ```
 
 `tests/no_alloc.rs` renders every factory preset with nih-plug's checking
@@ -71,13 +72,19 @@ clone). The top half shows the OSC | WT | FILTER | MATRIX | FX tabs; the bottom
 half always shows both envelopes, both LFOs, the master section, an output
 scope and the performance modulation sources.
 
-- Faders and graph handles: drag (Shift for fine), mouse wheel, double-click resets.
+- Faders, knobs, value fields and graph handles: drag (Shift for fine), mouse
+  wheel, double-click resets. A hovered knob shows its value in place of its name.
 - Stepped faders: drag, click a position or its label, or use the wheel.
   Long choice lists (wavetable, tempo division) are boxes with arrows; clicking
   the name opens the full list.
-- OSC: a wave display per oscillator shows the current frame with neighbouring
-  frames stacked behind it; while notes play it follows the frame actually being
-  played. Drag it sideways to scrub the WT position.
+- OSC: laid out after Serum 2. OSC A on the left and OSC B on the right, each
+  with a power switch, table browser, OCT / SEMI / FINE fields, a large
+  wavetable display, phase start and knobs. The display stacks every frame of
+  the table in 3D with the current frame highlighted (2D shows only that
+  frame); while notes play it follows the frame actually being played. Drag it
+  sideways or up to scrub the WT position; the pencil opens the table in the WT
+  editor. Between the oscillators: what A does to B (sync, FM, AM), the sub /
+  noise oscillator and the level meters.
 - WT: frame list, draw grid with pencil / line / smooth tools, morph stack,
   add / duplicate / delete / move / normalise, import (WAV, `.wt`) and export
   (WAV, `.wt`) through `zenity`. User tables go to `$XDG_DATA_HOME/double-slit/tables`.
@@ -137,7 +144,8 @@ builds.
   also exports VST3 (SPEC 1 lists VST3 as a non-goal). The VST3 bindings are
   GPL, hence the licence.
 - **GUI:** faders and graphs instead of knobs with arcs, as in the other Fonsie
-  Audio synths; four selectable themes instead of the fixed Tokyo Night palette.
+  Audio synths, except on the OSC tab, which follows Serum 2 with knobs; four
+  selectable themes instead of the fixed Tokyo Night palette.
 - **Presets** are a browser in the header: nih-plug has no host program list.
 - **Voice info:** no CLAP `voice_info` extension (nih-plug only offers it
   together with polyphonic modulation).

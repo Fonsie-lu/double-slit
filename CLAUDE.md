@@ -18,9 +18,10 @@ RUSTFLAGS="-C target-cpu=x86-64-v3" cargo xtask bundle double_slit --release   #
 
 cargo run --release --example gui_preview    # editor without a host
 DOUBLE_SLIT_DEMO=1 DOUBLE_SLIT_TAB=0..4 DOUBLE_SLIT_THEME=0..3 cargo run --release --example gui_preview
+DOUBLE_SLIT_PRESET=13 cargo run --release --example gui_preview   # load factory preset n (0-based) at start
 ```
 
-`[profile.test]` uses opt-level 2; DSP tests render seconds of audio. ALSA/JACK dev headers are not installed, so there is no nih-plug standalone; use `gui_preview` (with `DOUBLE_SLIT_DEMO=1` the engine plays a chord in a thread, no audio out) for the GUI and the tests/bench for audio.
+`cargo xtask` is an alias in `.cargo/config.toml`. `--profile profiling` is release with debug info, for perf/flamegraphs. `[profile.test]` uses opt-level 2; DSP tests render seconds of audio. ALSA/JACK dev headers are not installed, so there is no nih-plug standalone; use `gui_preview` (with `DOUBLE_SLIT_DEMO=1` the engine plays a chord in a thread, no audio out) for the GUI and the tests/bench for audio.
 
 Screenshot workflow: start the preview with `timeout 7 ... &`, wait ~5 s, `import -window "Double Slit Preview" out.png`, then crop with `magick out.png -crop 1506x975+0+197 +repage crop.png` (the window manager makes the window 1506x1369 and the panel is centred), then Read the PNG.
 
@@ -44,11 +45,11 @@ Two layers with a hard boundary:
 
 ### Engine
 
-`Synth` owns the parameter array, voice pool (16 + 4 slots for 10 ms steal fades), global LFOs, oversampling (1/2/4×, oscillators + filter only; envelopes, LFOs and matrix at the base rate), the FX chain and the denormal guard. `Voice` runs 2 oscillators + sub/noise → filter → VCA with per-sample matrix evaluation. Modulation is soft-limited against the headroom to the range edge (`Voice::modulated`), never around the centre. Wavetables: fixed 2048-sample frames, ≤256 frames, 11-level FFT mip chain; factory frames RMS-normalised; `factory_index()` is `None` after any edit, which makes patches embed the samples. Patches are the C++ JSON format (schema 1); unresolved matrix rows are kept and re-saved verbatim.
+`Synth` owns the parameter array, voice pool (16 + 4 slots for 10 ms steal fades), global LFOs, oversampling (1/2/4×, oscillators + filter only; envelopes, LFOs and matrix at the base rate), the FX chain and the denormal guard. `Voice` runs 2 oscillators + sub/noise → filter → VCA with per-sample matrix evaluation. Modulation is soft-limited against the headroom to the range edge (`Voice::modulated`), never around the centre. Wavetables: fixed 2048-sample frames, ≤256 frames, 11-level FFT mip chain; factory frames RMS-normalised; `factory_index()` is `None` after any edit, which makes patches embed the samples. Patches are the C++ JSON format (schema 1); unresolved matrix rows are kept and re-saved verbatim. Factory presets are built in code (`dsp/presets.rs`, `(ParamId, value)` lists plus matrix rows), not files; `tests/no_alloc.rs` renders every one.
 
 ### Editor (`src/editor/`)
 
-Painted on a fixed 1400×905 canvas (`BW`/`BH`) through `Cv`, scaled to the window. `mod.rs`: state, header, tabs, popups, drag-and-drop; `widgets.rs`: `G` (param I/O, faders, steppers, selectors, switches, buttons, chips); `graphs.rs`: envelope/filter graphs with handles, wave display, LFO, scope, spectrum; `tabs.rs`: the five tabs (rows 0–1) and the bottom half (rows 2–3). `row(i)`/`graph_rows(i)` give row geometry; x positions are hand-placed.
+Painted on a fixed 1400×905 canvas (`BW`/`BH`) through `Cv`, scaled to the window. `mod.rs`: state, header, tabs, popups, drag-and-drop; `widgets.rs`: `G` (param I/O, faders, knobs, value fields, steppers, selectors, switches, buttons, chips); `graphs.rs`: envelope/filter graphs with handles, the 3D/2D wavetable display, LFO, scope, spectrum; `tabs.rs`: the five tabs (rows 0–1) and the bottom half (rows 2–3). `row(i)`/`graph_rows(i)` give row geometry; x positions are hand-placed. The OSC tab is the exception: it follows Serum 2 (knobs and value fields, OSC A left / OSC B right, `OSC_W` panels with a centre column) and places everything by absolute y; the rest of the panel uses faders like the sibling synths. Single-frame factory tables (Sine…Pulse) show no 3D stack, so check the display with a multi-frame preset such as 13.
 
 - Parameter values reach the plugin asynchronously. Read through `G::shown`/`plain` (pending values win until the host applies them) and write only through `send` inside `begin`/`end`, or `change`/`change_plain`. Faders track drags in egui temp memory; graph handles use `drag_offset` (offset from the press origin) because egui swallows the first ~6 px of a drag, so test drags on handles must be longer than that.
 - Modulation: every modulatable control calls `mod_target`, which records it as a drop target for source chips (`drag_and_drop`) and opens the popover on right-click. `mod_info` sums matrix rows per target each frame for the range overlays.

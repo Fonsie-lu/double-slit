@@ -54,6 +54,8 @@ pub struct Theme {
     pub modulation: Color32,
     /// Warning state: unresolved matrix rows.
     pub warning: Color32,
+    /// The frame being played in the wavetable displays.
+    pub wave_current: Color32,
 
     pub cap: Color32,
     pub cap_top: Color32,
@@ -121,6 +123,7 @@ pub const TOKYO_NIGHT: Theme = Theme {
     drag_line: c(0xc0caf5),
     modulation: c(0xff9e64),
     warning: c(0xe0af68),
+    wave_current: c(0xe0af68),
     cap: c(0x24283b),
     cap_top: c(0x414868),
     cap_bottom: c(0x1f2335),
@@ -179,6 +182,7 @@ pub const CATPPUCCIN: Theme = Theme {
     drag_line: c(0xcdd6f4),
     modulation: c(0xfab387),
     warning: c(0xf9e2af),
+    wave_current: c(0xf9e2af),
     cap: c(0x313244),
     cap_top: c(0x45475a),
     cap_bottom: c(0x262637),
@@ -237,6 +241,7 @@ pub const DRACULA: Theme = Theme {
     drag_line: c(0xf8f8f2),
     modulation: c(0xffb86c),
     warning: c(0xf1fa8c),
+    wave_current: c(0xf1fa8c),
     cap: c(0x44475a),
     cap_top: c(0x5a5d75),
     cap_bottom: c(0x343746),
@@ -295,6 +300,7 @@ pub const GRUVBOX: Theme = Theme {
     drag_line: c(0xfbf1c7),
     modulation: c(0xfe8019),
     warning: c(0xfabd2f),
+    wave_current: c(0xfabd2f),
     cap: c(0x3c3836),
     cap_top: c(0x504945),
     cap_bottom: c(0x32302f),

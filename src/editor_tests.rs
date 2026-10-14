@@ -267,27 +267,34 @@ fn every_parameter_has_a_control() {
     assert_eq!(missing, ["filter.res", "envAmp.sustain", "envMod.sustain"]);
 }
 
-/// Every fader on the OSC tab and the bottom half follows a drag by the full
-/// distance, even though the host applies values late.
+/// Every fader, knob and value field on the OSC tab and the bottom half
+/// follows a drag by the full distance, even though the host applies values late.
 #[test]
 fn faders_follow_drag_with_host_latency() {
+    use crate::editor::widgets::{FIELD_TRAVEL, KNOB_TRAVEL};
     let mut h = Harness::new(4);
-    for c in h.controls(ControlKind::Fader) {
-        let s = scale_of(&c, 28.0);
-        let before = h.value(&c.name);
-        let up = before < 0.5;
-        let px = 0.4 * TRAVEL * s;
-        h.drag(c.rect.center(), vec2(0.0, if up { -px } else { px }), 12);
-        h.settle();
-        let change = h.value(&c.name) - before;
-        match Harness::id(&c.name).desc().steps {
-            0 => {
-                let expected = if up { 0.4 } else { -0.4 };
-                assert!((change - expected).abs() < 0.08, "{}: moved {change:.3}, expected {expected:.3}", c.name);
+    let mut checked = 0;
+    for (kind, width, travel) in [(ControlKind::Fader, 28.0, TRAVEL), (ControlKind::Knob, 0.0, KNOB_TRAVEL), (ControlKind::Field, 0.0, FIELD_TRAVEL)] {
+        for c in h.controls(kind) {
+            // Knobs and fields come in several sizes; the harness canvas is unscaled.
+            let s = if width > 0.0 { scale_of(&c, width) } else { 1.0 };
+            let before = h.value(&c.name);
+            let up = before < 0.5;
+            let px = 0.4 * travel * s;
+            h.drag(c.rect.center(), vec2(0.0, if up { -px } else { px }), 12);
+            h.settle();
+            let change = h.value(&c.name) - before;
+            match Harness::id(&c.name).desc().steps {
+                0 => {
+                    let expected = if up { 0.4 } else { -0.4 };
+                    assert!((change - expected).abs() < 0.08, "{}: moved {change:.3}, expected {expected:.3}", c.name);
+                }
+                _ => assert!(if up { change > 0.2 } else { change < -0.2 }, "{}: stepped control moved {change:.3}", c.name),
             }
-            _ => assert!(if up { change > 0.2 } else { change < -0.2 }, "{}: stepped fader moved {change:.3}", c.name),
+            checked += 1;
         }
     }
+    assert!(checked > 40, "only {checked} controls");
     h.assert_clean();
 }
 
@@ -333,7 +340,7 @@ fn steppers_click_positions() {
 fn table_selector_steps_and_lists() {
     let mut h = Harness::new(2);
     let c = h.control("oscA.table");
-    let s = scale_of(&c, 128.0);
+    let s = scale_of(&c, 290.0);
     let before = h.plain("oscA.table");
     h.click(c.rect.right_center() - vec2(6.0 * s, 0.0));
     h.settle();
@@ -359,6 +366,33 @@ fn switches_toggle() {
     h.click(c.rect.center());
     h.settle();
     assert_eq!(h.plain("oscB.on"), 0.0);
+    h.assert_clean();
+}
+
+/// The wave display scrubs the WT position (sideways or up), switches between
+/// 3D and 2D, and its pencil opens the table in the WT editor.
+#[test]
+fn wave_display_scrubs_and_opens_the_editor() {
+    let mut h = Harness::new(3);
+    let wave = h.control("wave:1");
+    assert_eq!(wave.kind, ControlKind::Graph);
+    let w = wave.rect.width();
+    h.drag(wave.rect.center(), vec2(0.15 * w, -0.15 * w), 10);
+    h.settle();
+    assert!((h.value("oscB.wtPos") - 0.3).abs() < 0.03, "{}", h.value("oscB.wtPos"));
+
+    let view = h.control("wave-view:1");
+    h.click(view.rect.center());
+    assert!(h.state.wave_flat[1] && !h.state.wave_flat[0]);
+    h.click(view.rect.center());
+    assert!(!h.state.wave_flat[1]);
+    // The click on the button does not reach the display underneath.
+    assert!((h.value("oscB.wtPos") - 0.3).abs() < 0.03);
+
+    let edit = h.control("wave-edit:1");
+    h.click(edit.rect.center());
+    assert_eq!(h.state.tab, Tab::Wt);
+    assert_eq!(h.state.wt.slot, 1);
     h.assert_clean();
 }
 

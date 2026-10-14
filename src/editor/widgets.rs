@@ -6,7 +6,7 @@ use nih_plug_egui::egui::{
     self, pos2, vec2, Align2, Color32, CornerRadius, FontFamily, FontId, Id, Painter, Pos2, Rect,
     Response, Sense, Shape, Stroke, StrokeKind, Ui, Vec2,
 };
-use std::f32::consts::TAU;
+use std::f32::consts::{PI, TAU};
 
 use super::theme::Theme;
 use super::{ControlInfo, ControlKind, EditorState, FocusKind, Pending, Popup, PENDING_TIMEOUT};
@@ -71,6 +71,10 @@ pub enum Steps {
 
 /// Fader slot travel in canvas pixels.
 pub const TRAVEL: f32 = 110.0;
+/// Vertical drag across a knob's full range, in canvas pixels.
+pub const KNOB_TRAVEL: f32 = 160.0;
+/// Vertical drag across a value field's full range, in canvas pixels.
+pub const FIELD_TRAVEL: f32 = 120.0;
 
 pub struct G<'a, 'b> {
     pub ui: &'a Ui,
@@ -400,6 +404,83 @@ impl G<'_, '_> {
         }
         let v = self.shown(id);
         self.cap(x, y1 - v * (y1 - y0), 20.0, resp.dragged());
+    }
+
+    /// Rotary knob (SPEC 6.3): a 270° track with the value arc from the
+    /// bottom left (from the top for bipolar parameters) and the modulation
+    /// range on an outer arc. Input as for a fader; the label turns into the
+    /// value while the knob is hovered.
+    pub fn knob(&mut self, id: ParamId, cx: f32, cy: f32, r: f32, label: &str) {
+        let cv = self.cv;
+        let s = cv.s;
+        let rect = cv.rc(cx, cy + 6.0, 2.0 * r + 22.0, 2.0 * r + 30.0);
+        self.register(&id.desc().id_string, ControlKind::Knob, rect);
+        let resp = self.continuous_input(id, rect, KNOB_TRAVEL, FocusKind::Plain);
+        self.mod_target(id, rect, &resp);
+        let active = resp.hovered() || resp.dragged();
+        let v = self.shown(id);
+        let extent = self.mod_extent(id);
+        let text = if active { self.value_text(id) } else { label.to_owned() };
+
+        let c = cv.p(cx, cy);
+        let at = |t: f32, radius: f32| {
+            let a = (0.75 + 1.5 * t) * PI;
+            c + vec2(a.cos(), a.sin()) * radius * s
+        };
+        let arc = |a: f32, b: f32, radius: f32, width: f32, color: Color32| {
+            let (a, b) = (a.min(b), a.max(b));
+            let n = ((b - a) * 48.0).ceil().max(1.0) as usize;
+            let pts: Vec<Pos2> = (0..=n).map(|k| at(a + (b - a) * k as f32 / n as f32, radius)).collect();
+            self.pt.add(Shape::line(pts, Stroke::new(width * s, color)));
+        };
+        let origin = if id.desc().bipolar { 0.5 } else { 0.0 };
+        arc(0.0, 1.0, r + 4.0, 2.5, self.th.slot);
+        if (v - origin).abs() > 1e-4 {
+            arc(origin, v, r + 4.0, 2.5, self.accent);
+        }
+        if let Some((lo, hi, activity)) = extent {
+            arc(lo, hi, r + 8.0, 2.0, self.th.modulation.gamma_multiply(0.55 + 0.45 * activity.clamp(0.0, 1.0)));
+        }
+        self.pt.circle_filled(c + vec2(1.5, 3.0) * s, r * s, Color32::from_black_alpha(140));
+        self.pt.circle_filled(c, r * s, self.th.cap_bottom);
+        self.pt.circle_filled(c - vec2(0.0, 1.0) * s, (r - 2.0) * s, self.th.cap);
+        let ink = if resp.dragged() { self.th.drag_line } else { self.th.text };
+        self.pt.line_segment([at(v, r * 0.3), at(v, r * 0.85)], Stroke::new(2.2 * s, ink));
+        let color = if active { self.accent } else { self.th.text };
+        self.text(cv.p(cx, cy + r + 15.0), Align2::CENTER_CENTER, &text, 9.5, color);
+    }
+
+    /// Value field ("OCT  +2"): name on the left, value without its unit on
+    /// the right. Drag vertically, wheel, double-click resets.
+    pub fn field(&mut self, id: ParamId, x: f32, y: f32, w: f32, label: &str) {
+        let cv = self.cv;
+        let rect = cv.r(x, y, w, 20.0);
+        self.register(&id.desc().id_string, ControlKind::Field, rect);
+        let resp = self.continuous_input(id, rect, FIELD_TRAVEL, FocusKind::Plain);
+        self.mod_target(id, rect, &resp);
+        let active = resp.hovered() || resp.dragged();
+        self.pt.rect_filled(rect, cv.round(3.0), self.th.slot);
+        self.pt.rect_stroke(
+            rect,
+            cv.round(3.0),
+            Stroke::new(1.0 * cv.s, if active { self.accent } else { self.th.scale }),
+            StrokeKind::Inside,
+        );
+        self.text(cv.p(x + 7.0, y + 10.0), Align2::LEFT_CENTER, label, 9.0, self.th.legend);
+        let unit = id.desc().unit;
+        let value = self.value_text(id);
+        let value = value.strip_suffix(unit).unwrap_or(&value).trim_end();
+        let value = if unit == "deg" { format!("{value}°") } else { value.to_owned() };
+        self.text(cv.p(x + w - 7.0, y + 10.0), Align2::RIGHT_CENTER, &value, 10.0, self.accent);
+        if let Some((lo, hi, activity)) = self.mod_extent(id) {
+            let color = self.th.modulation.gamma_multiply(0.55 + 0.45 * activity.clamp(0.0, 1.0));
+            let x_of = |n: f32| x + 3.0 + n * (w - 6.0);
+            self.pt.rect_filled(
+                Rect::from_two_pos(cv.p(x_of(lo), y + 16.0), cv.p(x_of(hi), y + 18.0)),
+                cv.round(1.0),
+                color,
+            );
+        }
     }
 
     /// Fader with detents; positions are labelled with text or icons on the
