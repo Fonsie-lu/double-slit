@@ -1,0 +1,46 @@
+[package]
+name = "double_slit"
+version = "0.1.0"
+edition = "2021"
+authors = ["Beat Weber <beat.weber@bithawk.ch>"]
+license = "GPL-3.0-or-later"
+description = "Double Slit - a polyphonic wavetable synthesizer"
+
+[workspace]
+members = ["xtask"]
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "f36931f7af4646065488a9845d8f8c2f95252c23", features = [
+    "assert_process_allocs",
+] }
+nih_plug_egui = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "f36931f7af4646065488a9845d8f8c2f95252c23" }
+atomic_float = "0.1"
+arc-swap = "1.7"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+base64 = "0.22"
+
+# Only for `examples/gui_preview.rs`, which opens the editor in a plain window
+# without a host. Same revisions as nih_plug_egui uses internally.
+[dev-dependencies]
+# Same fork nih-plug uses for `assert_process_allocs`, for tests/no_alloc.rs.
+assert_no_alloc = { git = "https://github.com/robbert-vdh/rust-assert-no-alloc.git", branch = "feature/nested-permit-forbid" }
+baseview = { git = "https://github.com/RustAudio/baseview.git", rev = "9a0b42c09d712777b2edb4c5e0cb6baf21e988f0" }
+egui-baseview = { git = "https://github.com/BillyDM/egui-baseview.git", rev = "ec70c3fe6b2f070dcacbc22924431edbe24bd1c0", features = ["opengl"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = "none"
+
+# Tests exercise the DSP at full sample rates; unoptimised they take minutes.
+[profile.test]
+opt-level = 2
