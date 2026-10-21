@@ -104,8 +104,29 @@ impl Harness {
             pointer: pos2(0.0, 0.0),
         };
         h.state.tab = Tab::Osc;
+        // Never the real library: tests must not see or touch user presets.
+        h.state.presets_dir = scratch_dir("none").join("presets");
+        h.state.user_presets.clear();
         h.run(2);
         h
+    }
+
+    /// Finishes a preset export (`true`) or import dialog with `answer`, as
+    /// zenity would.
+    fn answer_preset_dialog(&mut self, export: bool, answer: &str) {
+        let job: tabs::FileJob = Arc::new(Mutex::new(Some(Ok(answer.to_owned()))));
+        self.state.preset_job = Some((export, job));
+        self.run(1);
+        self.settle();
+    }
+
+    fn pick_preset(&mut self, index: usize) {
+        let browser = self.control("preset");
+        self.click(browser.rect.center());
+        let item = self.control(&format!("preset:{index}"));
+        self.click(item.rect.center());
+        self.settle();
+        assert_eq!(self.state.preset, Some(index));
     }
 
     fn run(&mut self, frames: usize) {
@@ -693,6 +714,66 @@ fn preset_buttons_load_presets() {
     }
     assert_eq!(h.state.shared.patch_name(), crate::dsp::presets::factory_preset_name(1));
     h.assert_clean();
+}
+
+/// A per-test folder under the system temp dir (tests run in parallel).
+fn scratch_dir(test: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("double-slit-editor-{}-{test}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
+/// Export writes the current sound into the library, where it is listed after
+/// the factory presets and loads back; import merges files and skips the ones
+/// already there.
+#[test]
+fn presets_export_and_import_through_the_library() {
+    use crate::dsp::presets::{factory_preset_name, num_factory_presets};
+    let root = scratch_dir("presets");
+    let mut h = Harness::new(2);
+    h.state.presets_dir = root.join("lib");
+    let factory = num_factory_presets();
+
+    // Vowel Morph Pad (Digi Vowel table), exported without an extension.
+    h.pick_preset(13);
+    assert_eq!(h.plain("oscA.table"), 13.0);
+    let lib = h.state.presets_dir.clone();
+    h.answer_preset_dialog(true, &lib.join("Vowel Copy").to_string_lossy());
+    assert!(lib.join("Vowel Copy.json").is_file());
+    assert_eq!(h.state.user_presets.len(), 1);
+    assert_eq!(h.state.preset, Some(factory));
+    assert_eq!(h.state.shared.patch_name(), "Vowel Copy");
+
+    // Listed under USER, after the factory columns, and loads back.
+    h.pick_preset(0);
+    assert_eq!(h.plain("oscA.table"), 2.0);
+    h.pick_preset(factory);
+    assert_eq!(h.plain("oscA.table"), 13.0);
+    assert_eq!(h.state.shared.patch_name(), "Vowel Copy");
+
+    // Next steps from the last factory preset into the user presets.
+    h.pick_preset(factory - 1);
+    let next = h.control("preset-next");
+    h.click(next.rect.center());
+    h.settle();
+    assert_eq!(h.state.preset, Some(factory));
+
+    // Import merges: the library's own file is already there; an export from
+    // elsewhere is added, and a factory name stays free.
+    h.answer_preset_dialog(false, &lib.join("Vowel Copy.json").to_string_lossy());
+    assert_eq!(h.state.preset_message, "IMPORTED 0, 1 ALREADY THERE");
+    h.pick_preset(3);
+    let outside = root.join("Sub Bass.json");
+    h.answer_preset_dialog(true, &outside.to_string_lossy());
+    assert_eq!(h.state.user_presets.len(), 1, "an export outside the library is not listed");
+    let junk = root.join("junk.json");
+    std::fs::write(&junk, "{").unwrap();
+    h.answer_preset_dialog(false, &format!("{}\n{}", outside.display(), junk.display()));
+    assert_eq!(h.state.preset_message, "IMPORTED 1, 1 NOT A PATCH");
+    let names: Vec<&str> = h.state.user_presets.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec![&format!("{} 2", factory_preset_name(3)) as &str, "Vowel Copy"]);
+    h.assert_clean();
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// Drawing on the WT grid edits the frame, publishes the table and selects Custom.

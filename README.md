@@ -47,6 +47,10 @@ heavy cases. To build and install in one step:
 `--clap` or `--vst3` limits the install to one format, and `--no-build` installs
 the existing bundles. `TARGET_CPU= ./install.sh` builds without `target-cpu`.
 
+`vendor/vst3-com` is nih-plug's `vst3-com` with one macro fixed (a trailing
+semicolon rustc warns about and will reject in a future release), wired in by
+`[patch]` in `Cargo.toml`; it goes once upstream has the fix.
+
 ## Development
 
 ```sh
@@ -111,8 +115,15 @@ section with the output scope and the performance modulation sources.
   handle on the left to reorder. All 16 slots are shown; clicking an empty one
   picks a source, then a target, and adds the row at +50 %. Unresolved rows from
   patches are shown, kept and re-saved.
-- Header: factory preset browser, value readout, CPU, voice LEDs, theme chips
+- Header: preset browser, value readout, CPU, voice LEDs, theme chips
   (Tokyo Night default, Catppuccin, Dracula, Gruvbox; saved with the project).
+- Presets: the list shows the factory presets and the user presets in
+  `$XDG_DATA_HOME/double-slit/presets`. EXPORT saves the current sound as a
+  self-contained patch file (the JSON format above, wavetables embedded);
+  exported into that folder it becomes a user preset. IMPORT takes one or more
+  patch files and merges them into the folder: new names are added, a patch
+  that is already there is skipped, and a different patch under a name in use
+  gets a number, so nothing is overwritten.
 
 ## Architecture
 
@@ -126,6 +137,7 @@ src/dsp/      engine: DSP + state, no nih-plug dependency
   mod_matrix  16 rows, stable string IDs, lock-free snapshot for the audio thread
   shared      SynthShared: matrix, tables, LFO shapes, GUI feedback atomics
   state       versioned JSON patches; presets: 48 factory patches
+  library     user presets: patch files in one folder, merging import
 src/params.rs host parameters generated from dsp/params.rs
 src/lib.rs    plugin: events, block loop, background table loading, state
 src/editor/   egui GUI: widgets, graphs, tabs, themes

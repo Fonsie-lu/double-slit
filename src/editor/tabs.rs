@@ -44,8 +44,9 @@ pub enum DrawTool {
     Smooth,
 }
 
-/// Result of a file dialog running on a helper thread.
-type FileJob = Arc<Mutex<Option<Result<String, String>>>>;
+/// Result of a file dialog running on a helper thread: the chosen path, one
+/// per line when several files may be picked.
+pub(crate) type FileJob = Arc<Mutex<Option<Result<String, String>>>>;
 
 #[derive(Default)]
 pub struct WtState {
@@ -68,28 +69,55 @@ pub struct WtState {
     pub message: String,
 }
 
-/// `$XDG_DATA_HOME/double-slit/tables`, created on demand (SPEC 5.3).
-pub fn tables_dir() -> PathBuf {
+/// `$XDG_DATA_HOME/double-slit/<leaf>`, not created.
+fn data_dir(leaf: &str) -> PathBuf {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
         .unwrap_or_else(|| PathBuf::from("."));
-    let dir = base.join("double-slit").join("tables");
+    base.join("double-slit").join(leaf)
+}
+
+/// `$XDG_DATA_HOME/double-slit/tables`, created on demand (SPEC 5.3).
+pub fn tables_dir() -> PathBuf {
+    let dir = data_dir("tables");
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
 
-/// Runs `zenity` for a file name without blocking the GUI.
-fn file_dialog(save: bool, suggested: PathBuf) -> FileJob {
+/// `$XDG_DATA_HOME/double-slit/presets`, the user preset library. Created by
+/// the first export or import, not by opening the editor.
+pub fn presets_dir() -> PathBuf {
+    data_dir("presets")
+}
+
+/// What an open dialog offers: a `zenity --file-filter` and whether several
+/// files may be picked.
+pub(crate) struct OpenFilter {
+    pub filter: &'static str,
+    pub multiple: bool,
+}
+
+const WAVETABLE_FILES: OpenFilter = OpenFilter { filter: "Wavetables | *.wav *.WAV *.wt", multiple: false };
+
+/// Runs `zenity` for a file name without blocking the GUI: a save dialog with
+/// `open` = `None`, an open dialog otherwise.
+pub(crate) fn file_dialog(open: Option<OpenFilter>, suggested: PathBuf) -> FileJob {
     let job: FileJob = Arc::new(Mutex::new(None));
     let out = job.clone();
     std::thread::spawn(move || {
         let mut cmd = std::process::Command::new("zenity");
         cmd.arg("--file-selection").arg(format!("--filename={}", suggested.display()));
-        if save {
-            cmd.arg("--save").arg("--confirm-overwrite");
-        } else {
-            cmd.arg("--file-filter=Wavetables | *.wav *.WAV *.wt");
+        match open {
+            None => {
+                cmd.arg("--save").arg("--confirm-overwrite");
+            }
+            Some(f) => {
+                cmd.arg(format!("--file-filter={}", f.filter));
+                if f.multiple {
+                    cmd.arg("--multiple").arg("--separator=\n");
+                }
+            }
         }
         let result = match cmd.output() {
             Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).trim().to_owned()),
@@ -388,7 +416,7 @@ impl G<'_, '_> {
         }
         x += 16.0;
         if self.button("wt:import", x, y, 60.0, "IMPORT", false, "IMPORT .WAV OR .WT").clicked() && self.st.wt.job.is_none() {
-            self.st.wt.job = Some((false, file_dialog(false, tables_dir().join(""))));
+            self.st.wt.job = Some((false, file_dialog(Some(WAVETABLE_FILES), tables_dir().join(""))));
         }
         x += 64.0;
         for (ext, w) in [("wav", 76.0), ("wt", 70.0)] {
@@ -396,7 +424,7 @@ impl G<'_, '_> {
             if self.button(&format!("wt:export-{ext}"), x, y, w, &label, false, "EXPORT TABLE").clicked() && self.st.wt.job.is_none() {
                 let name = self.st.wt.edit.as_ref().map(|t| t.name().to_owned()).unwrap_or_default();
                 let file = tables_dir().join(format!("{name}.{ext}"));
-                self.st.wt.job = Some((true, file_dialog(true, file)));
+                self.st.wt.job = Some((true, file_dialog(None, file)));
             }
             x += w + 4.0;
         }
@@ -1101,7 +1129,7 @@ fn smooth_around(data: &mut [f32], centre: usize, radius: usize) {
     }
 }
 
-fn short(path: &str) -> String {
+pub(crate) fn short(path: &str) -> String {
     std::path::Path::new(path)
         .file_name()
         .map(|s| s.to_string_lossy().to_uppercase())

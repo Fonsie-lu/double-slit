@@ -28,9 +28,10 @@ use crate::dsp::mod_matrix::{
     mod_source_display_name, mod_target_display_name, num_mod_targets, ModCurve, NUM_FIXED_SOURCES,
 };
 use crate::dsp::params::{ParamId, NUM_PARAMS};
+use crate::dsp::library::{self, UserPreset};
 use crate::dsp::presets::{build_factory_preset, factory_preset_name, num_factory_presets};
 use crate::dsp::shared::SynthShared;
-use crate::dsp::state::apply_patch_data;
+use crate::dsp::state::{apply_patch_data, save_patch, GuiState, PatchInfo};
 use crate::params::DoubleSlitParams;
 use theme::{Section, Theme, THEMES};
 pub use widgets::{Cv, G};
@@ -115,6 +116,13 @@ pub enum Popup {
     DropAmount { source: usize, target: usize, at: Pos2 },
 }
 
+/// Preset list: rows per column, column width, columns shown at once, and the
+/// IMPORT / EXPORT row under the list.
+const PRESET_ROWS: usize = 24;
+const PRESET_COL_W: f32 = 256.0;
+const PRESET_MAX_COLS: usize = 5;
+const PRESET_FOOTER_H: f32 = 30.0;
+
 /// Width of the drop amount scale (-100 … +100 %) in canvas pixels.
 const DROP_SCALE_W: f32 = 220.0;
 /// Scale position inside the drop popup, relative to its top left corner.
@@ -184,8 +192,18 @@ pub struct EditorState {
     /// Places a dragged source can be dropped, from the previous frame.
     pub(crate) drop_targets: Vec<(Rect, usize)>,
     pub(crate) mod_info: Vec<ModInfo>,
-    /// Last factory preset loaded from the header, for prev/next.
+    /// Last preset loaded from the header, for prev/next: factory presets
+    /// first, then `user_presets`.
     pub preset: Option<usize>,
+    /// The user preset library, re-read when the list opens and after an
+    /// export or import.
+    pub(crate) user_presets: Vec<UserPreset>,
+    pub(crate) presets_dir: std::path::PathBuf,
+    /// Running export (`true`) or import dialog.
+    pub(crate) preset_job: Option<(bool, tabs::FileJob)>,
+    pub(crate) preset_message: String,
+    /// First preset list column shown, when there are more than fit.
+    pub(crate) preset_scroll: usize,
     /// CC number offered by the MATRIX palette's CC chip.
     pub(crate) cc_pick: u8,
     pub(crate) wt: tabs::WtState,
@@ -214,6 +232,11 @@ impl EditorState {
             drop_targets: Vec::new(),
             mod_info: vec![ModInfo::default(); num_mod_targets()],
             preset: None,
+            user_presets: library::list(&tabs::presets_dir()),
+            presets_dir: tabs::presets_dir(),
+            preset_job: None,
+            preset_message: String::new(),
+            preset_scroll: 0,
             cc_pick: 74,
             wt: tabs::WtState::default(),
             wave_flat: [false; 2],
@@ -387,6 +410,7 @@ impl G<'_, '_> {
     fn header(&mut self) {
         let cv = self.cv;
         self.text(cv.p(18.0, 28.0), Align2::LEFT_CENTER, "WAVETABLE SYNTHESIZER", 9.0, self.th.header);
+        self.preset_poll_job();
         self.preset_browser();
         self.voice_leds();
         let cpu = self.st.shared.feedback.cpu_load.load(Relaxed);
@@ -401,10 +425,10 @@ impl G<'_, '_> {
     }
 
     /// Patch name with previous / next arrows; clicking the name lists the
-    /// factory presets. nih-plug has no host program list, so this is it.
+    /// factory and user presets. nih-plug has no host program list, so this is it.
     fn preset_browser(&mut self) {
         let cv = self.cv;
-        let count = num_factory_presets();
+        let count = self.num_presets();
         let name = self.st.shared.patch_name().to_uppercase();
         let name_rect = cv.r(232.0, 12.0, 256.0, 20.0);
         let resp = self.ui.interact(name_rect, Id::new("preset-name"), Sense::click());
@@ -423,10 +447,11 @@ impl G<'_, '_> {
         self.pt.text(cv.p(240.0, 22.0), Align2::LEFT_CENTER, &head, cv.mono(9.0), self.th.oled_dim);
         self.pt.text(cv.p(262.0, 22.0), Align2::LEFT_CENTER, &name, cv.mono(10.5), self.th.oled_ink);
         if resp.clicked() {
+            self.refresh_user_presets();
             self.st.popup = Some(Popup::Presets { at: pos2(232.0, 34.0) });
         }
         if resp.hovered() {
-            self.set_focus("FACTORY PRESETS", "CLICK FOR LIST".to_owned(), FocusKind::Plain);
+            self.set_focus("PRESETS", "CLICK FOR LIST, IMPORT, EXPORT".to_owned(), FocusKind::Plain);
         }
         self.accent = self.th.sublabel;
         if self.button("preset-prev", 206.0, 13.0, 22.0, "<", false, "PREVIOUS PRESET").clicked() {
@@ -439,16 +464,122 @@ impl G<'_, '_> {
         }
     }
 
+    /// Factory presets plus the user library.
+    pub(crate) fn num_presets(&self) -> usize {
+        num_factory_presets() + self.st.user_presets.len()
+    }
+
+    fn preset_name(&self, index: usize) -> &str {
+        match index.checked_sub(num_factory_presets()) {
+            None => factory_preset_name(index),
+            Some(u) => self.st.user_presets.get(u).map_or("", |p| p.name.as_str()),
+        }
+    }
+
+    pub(crate) fn refresh_user_presets(&mut self) {
+        self.st.user_presets = library::list(&self.st.presets_dir);
+    }
+
     /// Resolves a preset off the audio thread: matrix, tables and LFO shapes
     /// are published to the engine, parameters go to the host.
     pub(crate) fn load_preset(&mut self, index: usize) {
-        let Some(data) = build_factory_preset(index) else {
+        let data = match index.checked_sub(num_factory_presets()) {
+            None => build_factory_preset(index),
+            Some(u) => self.st.user_presets.get(u).and_then(|p| library::load(&p.path)),
+        };
+        let Some(data) = data else {
+            self.st.preset_message = format!("CANNOT LOAD {}", self.preset_name(index).to_uppercase());
+            self.refresh_user_presets();
             return;
         };
         let values = apply_patch_data(&data, &self.st.shared);
         self.send_all(&values);
         self.st.preset = Some(index);
         self.st.wt.edit = None;
+    }
+
+    /// The current sound as a self-contained patch (SPEC 5.1): parameter
+    /// values as the editor shows them, so pending edits are included.
+    fn current_patch_json(&mut self, name: &str) -> String {
+        let mut params = [0.0; NUM_PARAMS];
+        for id in ParamId::all() {
+            params[id.index()] = self.plain(id);
+        }
+        let info = PatchInfo { name: name.to_owned(), gui: GuiState { tab: self.st.tab as usize, ..GuiState::default() } };
+        save_patch(&self.st.shared, Some(&params), &info, true)
+    }
+
+    fn preset_export_dialog(&mut self) {
+        let name = library::file_name(&self.st.shared.patch_name());
+        let suggested = self.st.presets_dir.join(format!("{name}.json"));
+        let _ = std::fs::create_dir_all(&self.st.presets_dir);
+        self.st.preset_job = Some((true, tabs::file_dialog(None, suggested)));
+    }
+
+    fn preset_import_dialog(&mut self) {
+        let open = tabs::OpenFilter { filter: "Double Slit patches | *.json *.JSON", multiple: true };
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+        self.st.preset_job = Some((false, tabs::file_dialog(Some(open), home.join(""))));
+    }
+
+    fn preset_poll_job(&mut self) {
+        let Some((export, job)) = self.st.preset_job.clone() else {
+            return;
+        };
+        let Some(result) = job.lock().ok().and_then(|mut j| j.take()) else {
+            return;
+        };
+        self.st.preset_job = None;
+        match result {
+            Ok(text) if !text.is_empty() => {
+                if export {
+                    self.preset_export(std::path::Path::new(&text));
+                } else {
+                    let files: Vec<std::path::PathBuf> =
+                        text.lines().filter(|l| !l.is_empty()).map(std::path::PathBuf::from).collect();
+                    self.preset_import(&files);
+                }
+            }
+            Ok(_) => {}
+            Err(e) => self.st.preset_message = e,
+        }
+    }
+
+    /// Writes the current sound to `path` (".json" added when missing). The
+    /// file name becomes the patch name; inside the library the export shows
+    /// up as a user preset and becomes the selected one.
+    pub(crate) fn preset_export(&mut self, path: &std::path::Path) {
+        let path = if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("json")) {
+            path.to_path_buf()
+        } else {
+            path.with_extension("json")
+        };
+        let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let dir = path.parent().unwrap_or(std::path::Path::new("."));
+        let json = self.current_patch_json(&name);
+        match library::write_patch(dir, &name, &json) {
+            Ok(written) => {
+                self.st.shared.set_patch_name(&name);
+                self.st.preset_message = format!("EXPORTED {}", tabs::short(&written.to_string_lossy()));
+                self.refresh_user_presets();
+                self.st.preset = self
+                    .st
+                    .user_presets
+                    .iter()
+                    .position(|p| p.path == written)
+                    .map(|u| num_factory_presets() + u)
+                    .or(self.st.preset);
+            }
+            Err(e) => self.st.preset_message = format!("EXPORT FAILED: {e}"),
+        }
+    }
+
+    /// Merges patch files into the library (`library::import`).
+    pub(crate) fn preset_import(&mut self, files: &[std::path::PathBuf]) {
+        let factory: Vec<&str> = (0..num_factory_presets()).map(factory_preset_name).collect();
+        let report = library::import(&self.st.presets_dir, files, &factory);
+        self.st.preset_message = report.summary();
+        self.refresh_user_presets();
     }
 
     /// Sends every parameter to the host, each as its own gesture.
@@ -587,7 +718,10 @@ impl G<'_, '_> {
 
     fn popup_rect(&self, pop: Popup) -> Rect {
         let (at, w, h) = match pop {
-            Popup::Presets { at } => (at, 256.0, num_factory_presets() as f32 * 16.0 + 8.0),
+            Popup::Presets { at } => {
+                let (cols, rows) = self.preset_grid();
+                (at, cols.min(PRESET_MAX_COLS) as f32 * PRESET_COL_W + 8.0, (rows + 1) as f32 * 16.0 + 8.0 + PRESET_FOOTER_H)
+            }
             Popup::Choice { param, at } => {
                 let (w, row, _) = choice_metrics(param);
                 (at, w + 8.0, param.desc().choices.len().max(1) as f32 * row + 8.0)
@@ -620,15 +754,7 @@ impl G<'_, '_> {
         let mut close = false;
 
         match pop {
-            Popup::Presets { .. } => {
-                for i in 0..num_factory_presets() {
-                    let label = format!("{:02}  {}", i + 1, factory_preset_name(i).to_uppercase());
-                    if self.popup_item(&format!("preset:{i}"), origin + vec2(0.0, i as f32 * 16.0), 248.0, &label, self.st.preset == Some(i)) {
-                        self.load_preset(i);
-                        close = true;
-                    }
-                }
-            }
+            Popup::Presets { .. } => close = self.preset_list(origin, rect),
             Popup::Choice { param, .. } => {
                 let d = param.desc();
                 let current = self.plain(param).round() as usize;
@@ -692,6 +818,71 @@ impl G<'_, '_> {
         if close || outside {
             self.st.popup = None;
         }
+    }
+
+    /// Columns of the preset list (factory columns, then at least one user
+    /// column) and the rows of the longest column.
+    fn preset_grid(&self) -> (usize, usize) {
+        let (factory, user) = (num_factory_presets(), self.st.user_presets.len());
+        let cols = factory.div_ceil(PRESET_ROWS) + user.div_ceil(PRESET_ROWS).max(1);
+        (cols, factory.max(user).clamp(1, PRESET_ROWS))
+    }
+
+    /// The preset list: FACTORY and USER columns under their titles, IMPORT /
+    /// EXPORT and the last result below. The wheel scrolls the columns when
+    /// there are more than fit. Returns whether to close the popup.
+    fn preset_list(&mut self, origin: Pos2, rect: Rect) -> bool {
+        let cv = self.cv;
+        let factory = num_factory_presets();
+        let factory_cols = factory.div_ceil(PRESET_ROWS);
+        let (cols, rows) = self.preset_grid();
+        let shown = cols.min(PRESET_MAX_COLS);
+        if cols > shown && self.ui.rect_contains_pointer(rect) {
+            let scroll = self.ui.input(|i| i.raw_scroll_delta.y);
+            if scroll != 0.0 {
+                let s = self.st.preset_scroll as isize - scroll.signum() as isize;
+                self.st.preset_scroll = s.clamp(0, (cols - shown) as isize) as usize;
+            }
+        }
+        self.st.preset_scroll = self.st.preset_scroll.min(cols - shown);
+
+        let mut close = false;
+        for col in self.st.preset_scroll..self.st.preset_scroll + shown {
+            let x = origin.x + (col - self.st.preset_scroll) as f32 * PRESET_COL_W;
+            let (first, last, title) = if col < factory_cols {
+                (col * PRESET_ROWS, factory, (col == 0).then_some("FACTORY"))
+            } else {
+                let c = col - factory_cols;
+                (factory + c * PRESET_ROWS, self.num_presets(), (c == 0).then_some("USER"))
+            };
+            if let Some(title) = title {
+                self.pt.text(cv.p(x + 5.0, origin.y + 7.0), Align2::LEFT_CENTER, title, cv.mono(8.5), self.th.oled_dim);
+            }
+            if title == Some("USER") && first == last {
+                let hint = "EXPORT OR IMPORT TO ADD";
+                self.pt.text(cv.p(x + 5.0, origin.y + 23.0), Align2::LEFT_CENTER, hint, cv.mono(8.5), self.th.oled_dim);
+            }
+            for i in first..last.min(first + PRESET_ROWS) {
+                let label = format!("{:02}  {}", i + 1, self.preset_name(i).to_uppercase());
+                let at = pos2(x, origin.y + 16.0 + (i - first) as f32 * 16.0);
+                if self.popup_item(&format!("preset:{i}"), at, PRESET_COL_W - 8.0, &label, self.st.preset == Some(i)) {
+                    self.load_preset(i);
+                    close = true;
+                }
+            }
+        }
+
+        let y = origin.y + 16.0 + rows as f32 * 16.0 + 6.0;
+        let busy = self.st.preset_job.is_some();
+        if self.button("preset-import", origin.x, y, 70.0, "IMPORT", false, "IMPORT PATCH FILES").clicked() && !busy {
+            self.preset_import_dialog();
+        }
+        if self.button("preset-export", origin.x + 74.0, y, 70.0, "EXPORT", false, "EXPORT THE CURRENT SOUND").clicked() && !busy {
+            self.preset_export_dialog();
+        }
+        let message = self.st.preset_message.clone();
+        self.pt.text(cv.p(origin.x + 154.0, y + 9.0), Align2::LEFT_CENTER, &message, cv.mono(8.5), self.th.oled_dim);
+        close
     }
 
     pub(crate) fn popup_item(&mut self, key: &str, at: Pos2, w: f32, text: &str, selected: bool) -> bool {

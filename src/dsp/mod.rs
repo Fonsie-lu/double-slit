@@ -8,6 +8,7 @@ pub mod fft;
 pub mod filters;
 pub mod fx;
 pub mod lfo;
+pub mod library;
 pub mod mod_matrix;
 pub mod params;
 pub mod presets;
