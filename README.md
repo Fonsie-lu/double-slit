@@ -66,39 +66,45 @@ allocator armed; any allocation on the audio path aborts the test.
 
 ## Interface
 
-Coloured section bars, faders with scales, stepped faders and graphs with drag
-handles, in the style of Fonsie Audio's other synths (Drift, the Alpha Juno
-clone). The top half shows the OSC | WT | FILTER | MATRIX | FX tabs; the bottom
-half always shows both envelopes, both LFOs, the master section, an output
-scope and the performance modulation sources. The OSC tab and the envelopes
-follow Serum 2, with value fields beside the faders.
+Laid out after Serum 2 throughout: module headers with a power square and a
+type tag, rotary knobs with value and modulation arcs, value fields, cell lists
+for choices, and large graphs. The top half shows the OSC | WT | FILTER |
+MATRIX | FX tabs; the bottom half always shows an envelope, an LFO, the master
+section with the output scope and the performance modulation sources.
 
-- Faders, value fields and graph handles: drag (Shift for fine), mouse wheel,
-  double-click resets.
-- Stepped faders: drag, click a position or its label, or use the wheel.
-  Long choice lists (wavetable, tempo division) are boxes with arrows; clicking
-  the name opens the full list.
-- OSC: osc A and osc B fill the left and right halves (after Serum 2), with the
-  sub / noise source and the level meters in a narrow column between them. Each
-  half has a power LED in its bar, the table selector, OCT / SEMI / FINE value
-  fields (drag vertically, wheel, double-click resets), and a large display of
-  the whole table in perspective with the current frame lit; while notes play it
-  follows the frame actually being played. Drag it sideways to scrub the WT
-  position.
+- Knobs, value fields and graph handles: drag (Shift for fine), mouse wheel,
+  double-click resets. A hovered knob shows its value in place of its name.
+- Choices are cell lists (click a cell) or, for long lists (wavetable, tempo
+  division), boxes with arrows; clicking the name opens the full list. A
+  module's power square and title in its header toggle it.
+- OSC: OSC A on the left and OSC B on the right, each with a power switch,
+  table browser, OCT / SEMI / FINE fields, a large wavetable display, phase
+  start and knobs. The display stacks every frame of the table in 3D with the
+  current frame highlighted (2D shows only that frame); while notes play it
+  follows the frame actually being played. Drag it sideways or up to scrub the
+  WT position; the pencil opens the table in the WT editor. Between the
+  oscillators: what A does to B (sync, FM, AM), the sub / noise oscillator and
+  the level meters.
 - WT: frame list, draw grid with pencil / line / smooth tools, morph stack,
   add / duplicate / delete / move / normalise, import (WAV, `.wt`) and export
   (WAV, `.wt`) through `zenity`. User tables go to `$XDG_DATA_HOME/double-slit/tables`.
-- FILTER: drag the response curve sideways for cutoff (log axis) and up/down
-  for resonance; the output and pre-filter spectra run behind it, and a second
-  curve shows the cutoff the newest voice actually gets.
-- Envelopes: the graph spans the whole section; drag the handles - attack time,
-  decay time and sustain level, release time. A dot follows the newest voice.
-  Below it, every envelope value (ATK, DEC, SUS, REL, the three curves, VEL) is a
-  value field.
-- Modulation: drag a source chip (MATRIX palette, the envelope and LFO bars, the
-  SOURCES section) onto any modulatable control; an amount scale opens with the
-  pointer on +50 %, and a click on it adds the row (a click outside cancels).
-  Osc pitch takes modulation on OCT, SEMI and FINE. Right-click a
+- FILTER: type list, CUTOFF and RESONANCE fields and the knobs around the
+  response graph. Drag the curve sideways for cutoff (log axis) and up/down for
+  resonance; the output and pre-filter spectra run behind it, and a second curve
+  shows the cutoff the newest voice actually gets.
+- FX: distortion, chorus, delay and reverb as modules with knobs; the delay's
+  SYNC / DIVISION / PING PONG sit in a column, and the one of TIME and DIVISION
+  that does not apply is dimmed. The output spectrum below.
+- Bottom half: AMP ENV / MOD ENV and LFO 1 / LFO 2 tabs pick the envelope and
+  LFO shown; the round handle on each tab is that modulator's drag source.
+  Envelope graph: drag the handles - attack time, decay time and sustain level,
+  release time; a dot follows the newest voice. The LFO has its trigger mode and
+  shape as lists beside the graph and HZ / BPM below it (the unused one of RATE
+  and DIVISION is dimmed).
+- Modulation: drag a source chip or handle (MATRIX palette, the envelope and LFO
+  tabs, the SOURCES strip) onto any modulatable control; an amount scale opens
+  with the pointer on +50 %, and a click on it adds the row (a click outside
+  cancels). Osc pitch takes modulation on OCT, SEMI and FINE. Right-click a
   control to see, adjust or remove its rows or add a source. Modulated controls
   show their range in the modulation colour, brighter while the source moves.
 - MATRIX: source, target, amount, curve, mute and delete per row; drag the
@@ -148,9 +154,9 @@ builds.
 - **Framework:** nih-plug instead of JUCE + clap-juce-extensions, so the plugin
   also exports VST3 (SPEC 1 lists VST3 as a non-goal). The VST3 bindings are
   GPL, hence the licence.
-- **GUI:** faders, value fields and graphs instead of knobs with arcs, as in the
-  other Fonsie Audio synths; the OSC tab and the envelopes are laid out after
-  Serum 2. Four selectable themes instead of the fixed Tokyo Night palette.
+- **GUI:** laid out after Serum 2 (knobs with value and modulation arcs, value
+  fields, cell lists) rather than the faders of the other Fonsie Audio synths;
+  four selectable themes instead of the fixed Tokyo Night palette.
 - **Presets** are a browser in the header: nih-plug has no host program list.
 - **Voice info:** no CLAP `voice_info` extension (nih-plug only offers it
   together with polyphonic modulation).

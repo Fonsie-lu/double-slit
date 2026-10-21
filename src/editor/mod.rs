@@ -34,7 +34,6 @@ use crate::dsp::state::apply_patch_data;
 use crate::params::DoubleSlitParams;
 use theme::{Section, Theme, THEMES};
 pub use widgets::{Cv, G};
-use widgets::TRAVEL;
 
 /// Canvas size in logical pixels.
 pub(crate) const BW: f32 = 1400.0;
@@ -46,17 +45,6 @@ pub const HEIGHT: u32 = BH as u32;
 /// Top of the section bar in each of the four rows. Rows 0-1 belong to the
 /// active tab, rows 2-3 to the always-visible bottom half.
 pub(crate) const BAR_Y: [f32; 4] = [76.0, 284.0, 492.0, 700.0];
-
-/// Label baseline and fader slot (top, bottom) of a row.
-pub(crate) fn row(i: usize) -> (f32, (f32, f32)) {
-    let bar = BAR_Y[i];
-    (bar + 46.0, (bar + 66.0, bar + 66.0 + TRAVEL))
-}
-
-/// Top and bottom of a graph with a one-line caption above it.
-pub(crate) fn graph_rows(i: usize) -> (f32, f32) {
-    (BAR_Y[i] + 56.0, BAR_Y[i] + 186.0)
-}
 
 /// How long a value set by the GUI is shown before trusting the parameter again.
 pub(crate) const PENDING_TIMEOUT: f64 = 1.0;
@@ -140,6 +128,8 @@ fn drop_amount(at: Pos2, x: f32) -> f32 {
     (((x - mid) / (DROP_SCALE_W * 0.5)).clamp(-1.0, 1.0) * 100.0).round() / 100.0
 }
 
+
+
 /// Matrix rows summed per target, refreshed every frame for the fader overlays.
 #[derive(Clone, Copy, Default, Debug)]
 pub struct ModInfo {
@@ -155,8 +145,13 @@ pub type PreviewStore = Arc<Mutex<HashMap<ParamPtr, f32>>>;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ControlKind {
     Fader,
-    Stepper,
+    Knob,
+    /// Value box dragged vertically (octave, semitone, phase).
+    Field,
     Selector,
+    /// Choice as a grid of cells; registered whole under the parameter ID and
+    /// per cell as `"<id>#<index>"`.
+    List,
     Switch,
     Button,
     Chip,
@@ -164,8 +159,6 @@ pub enum ControlKind {
     Handle,
     /// Two-parameter graph, registered under its horizontal parameter.
     Graph,
-    /// Numeric field dragged vertically (`G::value_box`).
-    ValueBox,
 }
 
 /// Screen rectangle of an interactive control, recorded every frame (tests).
@@ -196,6 +189,11 @@ pub struct EditorState {
     /// CC number offered by the MATRIX palette's CC chip.
     pub(crate) cc_pick: u8,
     pub(crate) wt: tabs::WtState,
+    /// OSC tab wave displays showing only the current frame instead of the 3D stack.
+    pub(crate) wave_flat: [bool; 2],
+    /// Envelope (0 = amp, 1 = mod) and LFO shown in the bottom half.
+    pub env_page: usize,
+    pub lfo_page: usize,
     /// Matrix row being dragged to a new position: (row, current slot).
     pub(crate) row_drag: Option<(usize, usize)>,
     scratch: graphs::Scratch,
@@ -218,6 +216,9 @@ impl EditorState {
             preset: None,
             cc_pick: 74,
             wt: tabs::WtState::default(),
+            wave_flat: [false; 2],
+            env_page: 0,
+            lfo_page: 0,
             row_drag: None,
             scratch: graphs::Scratch::default(),
         }
@@ -598,6 +599,7 @@ impl G<'_, '_> {
             Popup::NewRow { source: Some(_), at } => (at, 420.0, 24.0 + 16.0 * (num_mod_targets() as f32 / 2.0).ceil()),
             Popup::DropAmount { at, .. } => (at, DROP_SCALE_W + 2.0 * DROP_SCALE_X, DROP_SCALE_Y + DROP_SCALE_H + 10.0),
         };
+
         let x = at.x.min(BW - w - 4.0);
         let y = at.y.min(BH - h - 4.0);
         self.cv.r(x, y, w, h)
@@ -837,6 +839,8 @@ impl G<'_, '_> {
     }
 }
 
+/// Sources offered in palettes and choosers: every fixed source, the four
+/// pre-mapped CC aliases (SPEC 4.1) and the currently picked CC.
 /// Item width, row pitch and font size of a choice list. The wavetable lists
 /// are as wide as their selector on the OSC tab and set larger.
 fn choice_metrics(param: ParamId) -> (f32, f32, f32) {
@@ -846,8 +850,6 @@ fn choice_metrics(param: ParamId) -> (f32, f32, f32) {
     }
 }
 
-/// Sources offered in palettes and choosers: every fixed source, the four
-/// pre-mapped CC aliases (SPEC 4.1) and the currently picked CC.
 pub(crate) fn palette_sources(cc_pick: u8) -> Vec<usize> {
     use crate::dsp::mod_matrix::cc_source_index;
     let mut v: Vec<usize> = (1..NUM_FIXED_SOURCES).collect();
