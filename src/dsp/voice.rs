@@ -9,7 +9,7 @@ use super::envelope::{Envelope, Stage};
 use super::filters::MultiFilter;
 use super::lfo::Lfo;
 use super::mod_matrix::{apply_mod_curve, mod_target_index_for_param, mod_targets, ModCurve, ModSource, Snapshot, NUM_FIXED_SOURCES};
-use super::oscillator::{resolve_frame, OscInput, Oscillator, StereoSample};
+use super::oscillator::{resolve_frame, FrameData, OscInput, Oscillator, StereoSample};
 use super::params::{
     ranges, time_div_beats, LfoRetrig, LfoShape, LfoSync, NoiseMode, ParamId, PhaseMode, SubMode, SyncMode,
     NUM_PARAMS,
@@ -837,8 +837,8 @@ impl Voice {
 
         let mut frame_a = resolve_frame(table_a, wt_pos_a, in_a.mip_level);
         let mut frame_b = resolve_frame(table_b, wt_pos_b, in_b.mip_level);
-        let mut data_a = table_a.frame_pointer(frame_a.frame, frame_a.level);
-        let mut data_b = table_b.frame_pointer(frame_b.frame, frame_b.level);
+        let mut data_a = FrameData::resolve(table_a, &frame_a);
+        let mut data_b = FrameData::resolve(table_b, &frame_b);
 
         let mut mod_countdown: usize = 0;
         for i in 0..num_samples {
@@ -892,12 +892,12 @@ impl Voice {
                 if dyn_wt_a {
                     wt_pos_a = self.modulated(p, OscAWtPos) * 0.01;
                     frame_a = resolve_frame(table_a, wt_pos_a, in_a.mip_level);
-                    data_a = table_a.frame_pointer(frame_a.frame, frame_a.level);
+                    data_a = FrameData::resolve(table_a, &frame_a);
                 }
                 if dyn_wt_b {
                     wt_pos_b = self.modulated(p, OscBWtPos) * 0.01;
                     frame_b = resolve_frame(table_b, wt_pos_b, in_b.mip_level);
-                    data_b = table_b.frame_pointer(frame_b.frame, frame_b.level);
+                    data_b = FrameData::resolve(table_b, &frame_b);
                 }
                 if dyn_phase_a {
                     phase_mod_a = self.mod_of(OscAPhase) / 360.0;
@@ -929,14 +929,14 @@ impl Voice {
             in_a.pan_l = pan_a_l;
             in_a.pan_r = pan_a_r;
             in_a.phase_mod = phase_mod_a;
-            let a = if osc_a_on { self.osc_a.process(&in_a, data_a, frame_a.frame) } else { StereoSample::default() };
+            let a = if osc_a_on { self.osc_a.process(&in_a, data_a, frame_a.nearest()) } else { StereoSample::default() };
 
             in_b.level = level_b;
             in_b.pan_l = pan_b_l;
             in_b.pan_r = pan_b_r;
             in_b.phase_mod = phase_mod_b + fm_index * a.mono;
             in_b.sync_reset = self.osc_a.did_wrap();
-            let mut b = if osc_b_on { self.osc_b.process(&in_b, data_b, frame_b.frame) } else { StereoSample::default() };
+            let mut b = if osc_b_on { self.osc_b.process(&in_b, data_b, frame_b.nearest()) } else { StereoSample::default() };
             if am_index > 0.0 {
                 let am_gain = 1.0 - am_index + am_index * (0.5 + 0.5 * a.mono);
                 b.left *= am_gain;

@@ -174,6 +174,9 @@ builds.
   together with polyphonic modulation).
 - **Patch format** is unchanged JSON, so opus-serum patches load; saved patches
   carry `"product": "double-slit"`.
+- **WT position** blends the two neighbouring frames (as Serum does) instead
+  of snapping to the nearest one, as SPEC 4.2's "frames only" was first read:
+  snapping switched the waveform mid-cycle, so modulating the position clicked.
 - **Plugin ID** changed with the product name, so projects using the C++
   opus-serum plugin do not load Double Slit in its place.
 

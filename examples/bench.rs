@@ -12,6 +12,7 @@ use double_slit::dsp::mod_matrix::{mod_target_from_id, ModCurve, ModSource};
 use double_slit::dsp::params::{FilterType, ParamId};
 use double_slit::dsp::shared::SynthShared;
 use double_slit::dsp::synth::Synth;
+use double_slit::dsp::wavetable::Wavetable;
 
 struct Case {
     name: &'static str,
@@ -21,6 +22,9 @@ struct Case {
     block: usize,
     rate: f64,
     fx: bool,
+    /// Factory table for both oscillators: Saw (single frame) by default; a
+    /// multi-frame one makes the matrix's WT position rows blend frames.
+    table: usize,
 }
 
 /// Fraction of one core, and the output peak.
@@ -33,6 +37,10 @@ fn run(c: &Case) -> (f64, f32) {
     synth.set_param(ParamId::OscAUniVoices, c.unison);
     synth.set_param(ParamId::OscBOn, 1.0);
     synth.set_param(ParamId::OscBUniVoices, c.unison);
+    for (slot, id) in [(0, ParamId::OscATable), (1, ParamId::OscBTable)] {
+        synth.set_param(id, c.table as f32);
+        shared.set_table(slot, Arc::new(Wavetable::make_factory(c.table)));
+    }
     synth.set_param(ParamId::FilterType, FilterType::LadderLp as usize as f32);
     synth.set_param(ParamId::FilterRes, 0.6);
     synth.set_param(ParamId::FilterDrive, 0.3);
@@ -89,12 +97,13 @@ fn run(c: &Case) -> (f64, f32) {
 
 fn main() {
     let cases = [
-        Case { name: "SPEC 9: 16 voices, 2x8 unison, 4x OS, 48k/128", oversampling: 2.0, unison: 8.0, voices: 16, block: 128, rate: 48_000.0, fx: true },
-        Case { name: "16 voices, 2x8 unison, 2x OS, 48k/128", oversampling: 1.0, unison: 8.0, voices: 16, block: 128, rate: 48_000.0, fx: true },
-        Case { name: "16 voices, 2x1 unison, 1x OS, 48k/128", oversampling: 0.0, unison: 1.0, voices: 16, block: 128, rate: 48_000.0, fx: true },
-        Case { name: "16 voices, 2x16 unison, 4x OS, 48k/128", oversampling: 2.0, unison: 16.0, voices: 16, block: 128, rate: 48_000.0, fx: true },
-        Case { name: "16 voices, 2x8 unison, 4x OS, 192k/128", oversampling: 2.0, unison: 8.0, voices: 16, block: 128, rate: 192_000.0, fx: true },
-        Case { name: "16 voices, 2x8 unison, 4x OS, 48k/1 sample", oversampling: 2.0, unison: 8.0, voices: 16, block: 1, rate: 48_000.0, fx: true },
+        Case { name: "SPEC 9: 16 voices, 2x8 unison, 4x OS, 48k/128", oversampling: 2.0, unison: 8.0, voices: 16, block: 128, rate: 48_000.0, fx: true, table: 2 },
+        Case { name: "16 voices, 2x8 unison, 2x OS, 48k/128", oversampling: 1.0, unison: 8.0, voices: 16, block: 128, rate: 48_000.0, fx: true, table: 2 },
+        Case { name: "16 voices, 2x1 unison, 1x OS, 48k/128", oversampling: 0.0, unison: 1.0, voices: 16, block: 128, rate: 48_000.0, fx: true, table: 2 },
+        Case { name: "16 voices, 2x16 unison, 4x OS, 48k/128", oversampling: 2.0, unison: 16.0, voices: 16, block: 128, rate: 48_000.0, fx: true, table: 2 },
+        Case { name: "16 voices, 2x8 unison, 4x OS, 192k/128", oversampling: 2.0, unison: 8.0, voices: 16, block: 128, rate: 192_000.0, fx: true, table: 2 },
+        Case { name: "SPEC 9 case on a 16-frame table (Analog Saws)", oversampling: 2.0, unison: 8.0, voices: 16, block: 128, rate: 48_000.0, fx: true, table: 5 },
+        Case { name: "16 voices, 2x8 unison, 4x OS, 48k/1 sample", oversampling: 2.0, unison: 8.0, voices: 16, block: 1, rate: 48_000.0, fx: true, table: 2 },
     ];
 
     println!("{:<52} {:>10} {:>8}", "case", "cpu/core", "peak");

@@ -49,45 +49,97 @@ pub struct StereoSample {
     pub mono: f32,
 }
 
-/// Frame index resolved for the current WT position. The voice turns it into
-/// a data slice with [`Wavetable::frame_pointer`] once per block.
+/// The two frames around the current WT position and how far it sits between
+/// them. The voice turns them into data slices with
+/// [`Wavetable::frame_pointer`] whenever the position moves.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OscFrame {
     pub frame: usize,
+    pub next: usize,
+    /// 0 plays `frame`, 1 would play `next`.
+    pub morph: f32,
     pub level: usize,
 }
 
-/// Picks the frame and mip level for a WT position (0..1) and pitch.
+impl OscFrame {
+    /// The frame the position is closest to, for the display.
+    pub fn nearest(&self) -> usize {
+        if self.morph >= 0.5 {
+            self.next
+        } else {
+            self.frame
+        }
+    }
+}
+
+/// Picks the frames and mip level for a WT position (0..1) and pitch. The
+/// position blends neighbouring frames: snapping to the nearest one switched
+/// the waveform mid-cycle, a click on every frame change while it moved.
 #[inline]
 pub fn resolve_frame(table: &Wavetable, wt_pos: f32, mip_level: usize) -> OscFrame {
+    let level = mip_level.min(MIP_LEVELS - 1);
     let frames = table.num_frames();
-    let frame = if frames <= 1 {
-        0
-    } else {
-        ((clamp01(wt_pos) * (frames - 1) as f32 + 0.5) as usize).min(frames - 1)
-    };
-    OscFrame { frame, level: mip_level.min(MIP_LEVELS - 1) }
+    if frames <= 1 {
+        return OscFrame { frame: 0, next: 0, morph: 0.0, level };
+    }
+    let pos = clamp01(wt_pos) * (frames - 1) as f32;
+    let frame = (pos as usize).min(frames - 1);
+    let next = (frame + 1).min(frames - 1);
+    let morph = if next == frame { 0.0 } else { pos - frame as f32 };
+    OscFrame { frame, next, morph, level }
+}
+
+/// The frame (or pair of frames) one oscillator reads this sample: both
+/// slices have the same power-of-two length (same table, same mip level).
+#[derive(Clone, Copy)]
+pub struct FrameData<'a> {
+    pub data: &'a [f32],
+    pub next: &'a [f32],
+    /// Blend towards `next`; exactly 0 reads `data` alone.
+    pub morph: f32,
+}
+
+impl<'a> FrameData<'a> {
+    /// One frame, no blend.
+    pub fn single(data: &'a [f32]) -> Self {
+        Self { data, next: data, morph: 0.0 }
+    }
+
+    pub fn resolve(table: &'a Wavetable, f: &OscFrame) -> Self {
+        let data = table.frame_pointer(f.frame, f.level);
+        let next = table.frame_pointer(f.next, f.level);
+        // A different length would break the shared masks; it cannot happen
+        // within one table, but a blend is not worth an out-of-bounds read.
+        let morph = if next.len() == data.len() { f.morph } else { 0.0 };
+        Self { data, next, morph }
+    }
 }
 
 /// Hermite read from a frame slice whose length is a power of two. Same maths
 /// as [`Wavetable::read_frame`], without the bounds checks: the masks keep
-/// every index inside `data`.
+/// every index inside `data`. With `MORPH` the four taps are blended with the
+/// same taps of `next` first; Hermite is linear in its taps, so that equals
+/// blending the two reads at half the arithmetic.
 #[inline(always)]
-fn read_frame_fast(data: &[f32], mask: usize, size_f: f32, phase: f32) -> f32 {
+fn read_frame_fast<const MORPH: bool>(data: &[f32], next: &[f32], morph: f32, mask: usize, size_f: f32, phase: f32) -> f32 {
     debug_assert_eq!(data.len(), mask + 1);
+    debug_assert_eq!(next.len(), mask + 1);
     let pos = phase * size_f;
     let i0 = (pos as i32 as usize) & mask;
     let frac = pos - pos.floor();
+    let (im1, ip1, ip2) = (i0.wrapping_sub(1) & mask, (i0 + 1) & mask, (i0 + 2) & mask);
     // SAFETY: every index is masked with `data.len() - 1` and the length is a
-    // power of two, so all four reads are in bounds.
-    let (xm1, x0, x1, x2) = unsafe {
-        (
-            *data.get_unchecked(i0.wrapping_sub(1) & mask),
-            *data.get_unchecked(i0),
-            *data.get_unchecked((i0 + 1) & mask),
-            *data.get_unchecked((i0 + 2) & mask),
-        )
-    };
+    // power of two (`next` has the same length), so all reads are in bounds.
+    let (mut xm1, mut x0, mut x1, mut x2) =
+        unsafe { (*data.get_unchecked(im1), *data.get_unchecked(i0), *data.get_unchecked(ip1), *data.get_unchecked(ip2)) };
+    if MORPH {
+        let (ym1, y0, y1, y2) =
+            unsafe { (*next.get_unchecked(im1), *next.get_unchecked(i0), *next.get_unchecked(ip1), *next.get_unchecked(ip2)) };
+        xm1 += (ym1 - xm1) * morph;
+        x0 += (y0 - x0) * morph;
+        x1 += (y1 - x1) * morph;
+        x2 += (y2 - x2) * morph;
+    }
     let c = (x1 - xm1) * 0.5;
     let v = x0 - x1;
     let w = c + v;
@@ -282,11 +334,22 @@ impl Oscillator {
         }
     }
 
-    /// One output sample. `data` is the resolved frame at the current mip
-    /// level (power-of-two length), `frame` its index for the display.
+    /// One output sample. `frames` is the resolved frame (pair) at the
+    /// current mip level (power-of-two length), `frame` the index the display
+    /// highlights.
     #[inline]
-    pub fn process(&mut self, input: &OscInput, data: &[f32], frame: usize) -> StereoSample {
+    pub fn process(&mut self, input: &OscInput, frames: FrameData, frame: usize) -> StereoSample {
+        if frames.morph == 0.0 {
+            self.process_frames::<false>(input, frames, frame)
+        } else {
+            self.process_frames::<true>(input, frames, frame)
+        }
+    }
+
+    #[inline(always)]
+    fn process_frames<const MORPH: bool>(&mut self, input: &OscInput, frames: FrameData, frame: usize) -> StereoSample {
         self.wrapped = false;
+        let FrameData { data, next, morph } = frames;
         if data.is_empty() {
             return StereoSample::default();
         }
@@ -324,7 +387,7 @@ impl Oscillator {
             #[cfg(target_arch = "x86_64")]
             // SAFETY: `simd` is only true when AVX2 and FMA were detected.
             unsafe {
-                self.read_unison_avx2(step, input.phase_mod, data, &mut sum_l, &mut sum_r, &mut sum_mono);
+                self.read_unison_avx2::<MORPH>(step, input.phase_mod, frames, &mut sum_l, &mut sum_r, &mut sum_mono);
             }
         } else if self.sync_mode == SyncMode::Off {
             // No sync: the read phase *is* the base phase, so only track one.
@@ -352,7 +415,7 @@ impl Oscillator {
                     phase += pm;
                     phase -= phase.floor();
                 }
-                let s = read_frame_fast(data, mask, size_f, phase) * gains[i];
+                let s = read_frame_fast::<MORPH>(data, next, morph, mask, size_f, phase) * gains[i];
                 sum_l += s * pan_l[i];
                 sum_r += s * pan_r[i];
                 sum_mono += s;
@@ -387,7 +450,7 @@ impl Oscillator {
                 let mut phase = self.read_phase[i] + input.phase_mod;
                 phase -= phase.floor();
 
-                let s = read_frame_fast(data, mask, size_f, phase) * self.voice_gain[i];
+                let s = read_frame_fast::<MORPH>(data, next, morph, mask, size_f, phase) * self.voice_gain[i];
                 sum_l += s * self.unison_pan_l[i];
                 sum_r += s * self.unison_pan_r[i];
                 sum_mono += s;
@@ -419,17 +482,19 @@ impl Oscillator {
     /// gathers do not auto-vectorise, hence the intrinsics. Lanes past the
     /// active count have zero gain, so a partial last block is harmless.
     #[target_feature(enable = "avx2,fma")]
-    unsafe fn read_unison_avx2(
+    unsafe fn read_unison_avx2<const MORPH: bool>(
         &mut self,
         step: f32,
         phase_mod: f32,
-        data: &[f32],
+        frames: FrameData,
         sum_l: &mut f32,
         sum_r: &mut f32,
         sum_mono: &mut f32,
     ) {
         use std::arch::x86_64::*;
+        let FrameData { data, next, morph } = frames;
         let mask = data.len() as i32 - 1;
+        let morph_v = _mm256_set1_ps(morph);
         let one = _mm256_set1_ps(1.0);
         let half = _mm256_set1_ps(0.5);
         let step_v = _mm256_set1_ps(step);
@@ -470,10 +535,19 @@ impl Oscillator {
             let ip1 = _mm256_and_si256(_mm256_add_epi32(index, _mm256_set1_epi32(1)), mask_v);
             let ip2 = _mm256_and_si256(_mm256_add_epi32(index, _mm256_set1_epi32(2)), mask_v);
             let base = data.as_ptr();
-            let xm1 = _mm256_i32gather_ps::<4>(base, im1);
-            let x0 = _mm256_i32gather_ps::<4>(base, i0);
-            let x1 = _mm256_i32gather_ps::<4>(base, ip1);
-            let x2 = _mm256_i32gather_ps::<4>(base, ip2);
+            let mut xm1 = _mm256_i32gather_ps::<4>(base, im1);
+            let mut x0 = _mm256_i32gather_ps::<4>(base, i0);
+            let mut x1 = _mm256_i32gather_ps::<4>(base, ip1);
+            let mut x2 = _mm256_i32gather_ps::<4>(base, ip2);
+            if MORPH {
+                // Same tap blend as the scalar path; `next` has the same length.
+                let nb = next.as_ptr();
+                let blend = |x: __m256, y: __m256| _mm256_fmadd_ps(_mm256_sub_ps(y, x), morph_v, x);
+                xm1 = blend(xm1, _mm256_i32gather_ps::<4>(nb, im1));
+                x0 = blend(x0, _mm256_i32gather_ps::<4>(nb, i0));
+                x1 = blend(x1, _mm256_i32gather_ps::<4>(nb, ip1));
+                x2 = blend(x2, _mm256_i32gather_ps::<4>(nb, ip2));
+            }
 
             // Same Hermite form as the scalar path, lane by lane.
             let c = _mm256_mul_ps(_mm256_sub_ps(x1, xm1), half);
@@ -505,6 +579,7 @@ impl Oscillator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dsp::common::lerp;
 
     fn saw() -> Wavetable {
         Wavetable::make_factory(2)
@@ -520,7 +595,7 @@ mod tests {
         let data = table.frame_pointer(f.frame, f.level);
         let input = OscInput { increment: 0.01, ..Default::default() };
         for k in 1..50 {
-            let out = osc.process(&input, data, f.frame);
+            let out = osc.process(&input, FrameData::resolve(&table, &f), f.frame);
             let expected = Wavetable::read_frame(data, (k as f32 * 0.01).fract());
             assert!((out.mono - expected).abs() < 1.0e-4, "sample {k}");
         }
@@ -528,22 +603,50 @@ mod tests {
 
     #[test]
     fn simd_and_scalar_unison_agree() {
-        let table = saw();
-        let f = resolve_frame(&table, 0.0, 0);
-        let data = table.frame_pointer(f.frame, f.level);
-        for n in [5, 8, 11, 16] {
-            let run = |simd: bool| {
-                let mut osc = Oscillator::default();
-                osc.simd = simd && osc.simd;
-                osc.set_unison(n, 25.0, 0.7, 0.4);
-                osc.start(PhaseMode::Reset, 30.0);
-                let input = OscInput { increment: 0.013, phase_mod: 0.1, ..Default::default() };
-                (0..400).map(|_| osc.process(&input, data, 0)).collect::<Vec<_>>()
-            };
-            let (a, b) = (run(true), run(false));
-            for (x, y) in a.iter().zip(&b) {
-                assert!((x.left - y.left).abs() < 1.0e-4 && (x.right - y.right).abs() < 1.0e-4, "unison {n}");
+        // Saw is one frame; Analog Organ at 43 % blends frames 6 and 7.
+        for (table, wt_pos) in [(saw(), 0.0), (Wavetable::make_factory(7), 0.43)] {
+            let f = resolve_frame(&table, wt_pos, 0);
+            assert_eq!(f.morph > 0.0, wt_pos > 0.0);
+            let frames = FrameData::resolve(&table, &f);
+            for n in [5, 8, 11, 16] {
+                let run = |simd: bool| {
+                    let mut osc = Oscillator::default();
+                    osc.simd = simd && osc.simd;
+                    osc.set_unison(n, 25.0, 0.7, 0.4);
+                    osc.start(PhaseMode::Reset, 30.0);
+                    let input = OscInput { increment: 0.013, phase_mod: 0.1, ..Default::default() };
+                    (0..400).map(|_| osc.process(&input, frames, 0)).collect::<Vec<_>>()
+                };
+                let (a, b) = (run(true), run(false));
+                for (x, y) in a.iter().zip(&b) {
+                    assert!((x.left - y.left).abs() < 1.0e-4 && (x.right - y.right).abs() < 1.0e-4, "unison {n}");
+                }
             }
+        }
+    }
+
+    /// Between two frames the oscillator plays the blend of both reads, and on
+    /// a frame exactly that frame.
+    #[test]
+    fn positions_between_frames_blend_the_neighbours() {
+        let table = Wavetable::make_factory(7);
+        let last = table.num_frames() - 1;
+        let f = resolve_frame(&table, 6.25 / last as f32, 0);
+        assert_eq!((f.frame, f.next, f.nearest()), (6, 7, 6));
+        assert!((f.morph - 0.25).abs() < 1.0e-4);
+        let end = resolve_frame(&table, 1.0, 0);
+        assert_eq!((end.frame, end.next, end.morph), (last, last, 0.0));
+
+        let mut osc = Oscillator::default();
+        osc.prepare(48_000.0);
+        osc.start(PhaseMode::Reset, 0.0);
+        let (a, b) = (table.frame_pointer(6, 0), table.frame_pointer(7, 0));
+        let input = OscInput { increment: 0.01, ..Default::default() };
+        for k in 1..50 {
+            let out = osc.process(&input, FrameData::resolve(&table, &f), f.nearest());
+            let phase = (k as f32 * 0.01).fract();
+            let expected = lerp(Wavetable::read_frame(a, phase), Wavetable::read_frame(b, phase), f.morph);
+            assert!((out.mono - expected).abs() < 1.0e-4, "sample {k}");
         }
     }
 
@@ -565,7 +668,7 @@ mod tests {
             let mut osc = Oscillator::default();
             osc.seed(42);
             osc.set_noise_mode(NoiseMode::Pink);
-            (0..64).map(|_| osc.process(&OscInput::default(), data, 0).mono).collect::<Vec<_>>()
+            (0..64).map(|_| osc.process(&OscInput::default(), FrameData::single(data), 0).mono).collect::<Vec<_>>()
         };
         assert_eq!(run(), run());
     }

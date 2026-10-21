@@ -909,6 +909,37 @@ mod tests {
         assert!(max_jump < 0.15, "{max_jump}");
     }
 
+    /// Moving through a table blends neighbouring frames. Snapping to the
+    /// nearest frame switched the waveform mid-cycle, a step on every frame
+    /// change: Analog Organ under an LFO crackled. A step is broadband, so it
+    /// shows in the 4th difference (+24 dB/oct), where the organ's partials
+    /// (under 1.1 kHz at C3) barely register; snapping read 100x higher there.
+    #[test]
+    fn sweeping_the_wavetable_does_not_click() {
+        let hf_peak = |wt_pos: f32, lfo: bool| {
+            let mut s = synth(48_000.0, 64);
+            s.shared().set_table(0, Arc::new(Wavetable::make_factory(7)));
+            s.set_param(ParamId::OscBOn, 0.0);
+            s.set_param(ParamId::FilterOn, 0.0);
+            s.set_param(ParamId::OscAWtPos, wt_pos);
+            if lfo {
+                s.set_param(ParamId::Lfo1Rate, 3.0);
+                add_row(&s, ModSource::Lfo1.index(), "oscA.wtPos", 0.5);
+            }
+            s.note_on(0, 48, 1.0, 0);
+            render_blocks(&mut s, 20, 64);
+            let out = render_blocks(&mut s, 750, 64);
+            assert!(out.finite);
+            out.left
+                .windows(5)
+                .fold(0.0_f32, |m, w| m.max((w[0] - 4.0 * w[1] + 6.0 * w[2] - 4.0 * w[3] + w[4]).abs()))
+        };
+        // What the table has up there on its own, at any position.
+        let still = (0..=10).map(|k| hf_peak(k as f32 * 10.0, false)).fold(0.0_f32, f32::max);
+        let swept = hf_peak(50.0, true);
+        assert!(swept < still * 2.0 + 1.0e-4, "sweep {swept} vs still {still}");
+    }
+
     #[test]
     fn all_oversampling_factors_render_cleanly() {
         for os in [0.0, 1.0, 2.0] {
