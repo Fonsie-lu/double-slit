@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Double Slit (vendor Fonsie Audio) is a Serum-inspired polyphonic wavetable synth plugin, CLAP + VST3, built on nih-plug with a custom-painted nih_plug_egui editor (egui 0.31). It is a Rust port of the C++/JUCE "opus-serum" (in git history before the `nih-plug-port` branch). `SPEC.md` is the original requirements document; comments cite its sections ("SPEC 4.3") — keep that convention. `README.md` lists the deviations. The GUI follows the sibling projects `~/tools/drift-synth` and `~/tools/juno-clone`.
+Double Slit (vendor Fonsie Audio) is a Serum-inspired polyphonic wavetable synth plugin, CLAP + VST3, built on nih-plug with a custom-painted nih_plug_egui editor (egui 0.31). It is a Rust port of the C++/JUCE "opus-serum" (not in this repository; `SPEC.md` still describes the JUCE stack). `SPEC.md` is the original requirements document; comments cite its sections ("SPEC 4.3") — keep that convention. `README.md` lists the deviations. The GUI follows the sibling projects `~/tools/drift-synth` and `~/tools/juno-clone`.
 
 ## Commands
 
@@ -12,6 +12,7 @@ cargo test --lib dsp::filters                # one module's tests
 cargo test --lib editor::tests::matrix       # editor tests by name filter
 cargo clippy --all-targets
 cargo run --release --example bench          # SPEC 9 performance cases (print % of one core)
+cargo run --profile profiling --example bench # release + debug symbols, for perf
 
 RUSTFLAGS="-C target-cpu=x86-64-v3" cargo xtask bundle double_slit --release   # -> target/bundled/
 ./install.sh                                 # build, symlink into ~/.clap and ~/.vst3 (--help for options)
@@ -48,10 +49,11 @@ Two layers with a hard boundary:
 
 ### Editor (`src/editor/`)
 
-Painted on a fixed 1400×905 canvas (`BW`/`BH`) through `Cv`, scaled to the window. `mod.rs`: state, header, tabs, popups, drag-and-drop; `widgets.rs`: `G` (param I/O, faders, steppers, selectors, switches, buttons, chips); `graphs.rs`: envelope/filter graphs with handles, wave display, LFO, scope, spectrum; `tabs.rs`: the five tabs (rows 0–1) and the bottom half (rows 2–3). `row(i)`/`graph_rows(i)` give row geometry; x positions are hand-placed.
+Painted on a fixed 1400×905 canvas (`BW`/`BH`) through `Cv`, scaled to the window. `mod.rs`: state, header, tabs, popups, drag-and-drop; `widgets.rs`: `G` (param I/O, faders, steppers, selectors, value boxes, switches, buttons, chips); `graphs.rs`: envelope/filter graphs with handles, wave display, LFO, scope, spectrum; `tabs.rs`: the five tabs (rows 0–1) and the bottom half (rows 2–3). `row(i)`/`graph_rows(i)` give row geometry; x positions are hand-placed or `spread(x0, x1, n)` across a section. Text is never smaller than `MIN_FONT` (11 px): check new labels for collisions in a screenshot, `G::text_w` measures. Module on/off parameters are `G::power` LEDs at the left end of their section bar; module parameter blocks are addressed as `first.offset(o)`.
 
 - Parameter values reach the plugin asynchronously. Read through `G::shown`/`plain` (pending values win until the host applies them) and write only through `send` inside `begin`/`end`, or `change`/`change_plain`. Faders track drags in egui temp memory; graph handles use `drag_offset` (offset from the press origin) because egui swallows the first ~6 px of a drag, so test drags on handles must be longer than that.
 - Modulation: every modulatable control calls `mod_target`, which records it as a drop target for source chips (`drag_and_drop`) and opens the popover on right-click. `mod_info` sums matrix rows per target each frame for the range overlays.
+- WT import/export dialogs run `zenity` off the GUI thread; user tables live in `$XDG_DATA_HOME/double-slit/tables`.
 - Popups are drawn last and shielded with a background interact so the click on an entry does not reach controls underneath.
 - Never hard-code colours; add a `Theme` field (`theme.rs`) and fill it for all four themes (Tokyo Night default, Catppuccin, Dracula, Gruvbox — same set as the sibling synths). `Section` indexes bar/accent colours; `modulation` and `warning` are the matrix colours.
 - `src/editor_tests.rs` (compiled as `editor::tests` via `#[path]`) runs the real editor headless against a mock host that applies values late and checks gesture balance; every control registers its rect in `EditorState::controls` under its parameter ID (or a fixed key).

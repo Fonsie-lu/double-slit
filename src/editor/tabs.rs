@@ -6,15 +6,40 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
 
 use super::theme::Section;
-use super::widgets::{graph_bg, Nums, Steps, G, BIPOLAR_L, N10L, N10R};
+use super::widgets::{fill_under, graph_bg, Nums, Steps, G, BIPOLAR_L, N10L, N10R, TRAVEL};
 use super::{graph_rows, palette_sources, row, ControlKind, FocusKind, Popup, BAR_Y, BW};
-use crate::dsp::common::FRAME_SIZE;
+use crate::dsp::common::{FRAME_SIZE, MATRIX_SLOTS};
 use crate::dsp::mod_matrix::{
     cc_source_index, mod_source_category, mod_source_display_name, mod_target_display_name, ModCurve,
     ModSource,
 };
 use crate::dsp::params::{ParamId, CUSTOM_TABLE_CHOICE, FILTER_TYPES};
 use crate::dsp::wavetable::Wavetable;
+
+// ----------------------------------------------------------- OSC geometry
+
+/// Left edge of the osc A and osc B halves and their width; the sub / noise
+/// column sits between them.
+const OSC_X: [f32; 2] = [16.0, 778.0];
+const OSC_W: f32 = 610.0;
+const SUB_X: f32 = 626.0;
+const SUB_W: f32 = 152.0;
+
+/// Width of an envelope section and the top / bottom of its graph.
+pub(crate) const ENV_W: f32 = 430.0;
+pub(crate) const ENV_GRAPH: (f32, f32) = (BAR_Y[2] + 30.0, BAR_Y[2] + 146.0);
+
+/// Centres of `n` controls spread evenly across `x0 .. x1`.
+fn spread(x0: f32, x1: f32, n: usize) -> Vec<f32> {
+    let step = (x1 - x0) / n as f32;
+    (0..n).map(|i| x0 + (i as f32 + 0.5) * step).collect()
+}
+
+/// Fader row of the OSC tab, below the displays: label baseline and slot.
+fn osc_row() -> (f32, (f32, f32)) {
+    let label = BAR_Y[0] + 264.0;
+    (label, (label + 20.0, label + 20.0 + TRAVEL))
+}
 
 // ------------------------------------------------------------------ WT state
 
@@ -93,78 +118,126 @@ impl G<'_, '_> {
         self.bar(
             BAR_Y[0],
             &[
-                (16.0, 944.0, "OSC A", Section::OscA),
-                (944.0, 1150.0, "OSC C  SUB / NOISE", Section::OscC),
-                (1150.0, BW - 12.0, "LEVELS", Section::Master),
+                (OSC_X[0], OSC_X[0] + OSC_W, "OSC A", Section::OscA),
+                (SUB_X, SUB_X + SUB_W, "SUB / NOISE", Section::OscC),
+                (OSC_X[1], OSC_X[1] + OSC_W, "OSC B", Section::OscB),
             ],
         );
-        self.bar(BAR_Y[1], &[(16.0, BW - 12.0, "OSC B", Section::OscB)]);
         self.accent = th.accents[Section::OscA as usize];
-        self.osc(0, 16.0);
+        self.osc(0, OSC_X[0]);
         self.accent = th.accents[Section::OscB as usize];
-        self.osc(1, 16.0);
-
+        self.osc(1, OSC_X[1]);
         self.accent = th.accents[Section::OscC as usize];
-        let (l, sl) = row(0);
-        self.stepper(ParamId::OscCMode, 1010.0, l, sl, "MODE", Steps::Text(&["SINE", "TRI", "WHITE", "PINK"]));
-        self.fader(ParamId::OscCLevel, 1058.0, l, sl, "LEVEL", Nums::None, FocusKind::Plain);
-        self.fader(ParamId::OscCPitch, 1104.0, l, sl, "PITCH", BIPOLAR_L, FocusKind::Plain);
-
-        self.accent = th.accents[Section::Master as usize];
-        self.osc_meters(1180.0, l, sl);
+        self.sub_column(SUB_X);
     }
 
-    /// One oscillator: wave display, on switch, table, then the faders. Osc B
-    /// adds noise, sync, FM and AM.
+    /// One oscillator half (Serum 2 style): power LED in the bar, table and
+    /// pitch fields, the wavetable as the big display, a strip of mode fields
+    /// and the faders. Osc B adds noise, sync, FM and AM to the strip.
     fn osc(&mut self, osc: usize, x0: f32) {
-        let r = osc;
-        let (l, sl) = row(r);
         let base = if osc == 0 { ParamId::OscAOn } else { ParamId::OscBOn };
-        let p = |o: usize| ParamId::from_index(base.index() + o);
-        let bar = BAR_Y[r];
-        let display = self.cv.r(x0 + 12.0, bar + 30.0, 180.0, 160.0);
+        let p = |o: usize| base.offset(o);
+        let x = x0 + 12.0;
+        let w = OSC_W - 24.0;
+        self.power(p(0), x0 + 4.0, BAR_Y[0]);
+
+        let y = BAR_Y[0] + 30.0;
+        self.selector(p(1), x, y, 232.0, "");
+        let field = (w - 244.0 - 18.0) / 3.0;
+        for (k, (o, name)) in [(5, "OCT"), (6, "SEMI"), (7, "FINE")].into_iter().enumerate() {
+            self.value_box(p(o), x + 244.0 + k as f32 * (field + 9.0), y, field, name);
+        }
+
+        let display = self.cv.r(x, BAR_Y[0] + 58.0, w, 154.0);
         self.wave_display(osc, display);
-        self.switch(p(0), x0 + 234.0, l, "ON");
-        let level = self.st.shared.feedback.osc_meters[osc].load(Relaxed);
-        self.led(self.cv.p(x0 + 276.0, l + 14.0), (level * 2.0).min(1.0));
-        self.selector(p(1), x0 + 206.0, bar + 152.0, 128.0, "TABLE");
-        self.fader(p(2), x0 + 364.0, l, sl, "WT POS", N10L, FocusKind::Plain);
-        self.fader(p(3), x0 + 410.0, l, sl, "LEVEL", Nums::None, FocusKind::Plain);
-        self.fader(p(4), x0 + 456.0, l, sl, "PAN", Nums::None, FocusKind::Plain);
-        self.stepper(p(5), x0 + 522.0, l, sl, "OCT", Steps::Text(&["-3", "-2", "-1", "0", "+1", "+2", "+3"]));
-        self.fader(p(6), x0 + 568.0, l, sl, "SEMI", Nums::None, FocusKind::Plain);
-        self.fader(p(7), x0 + 614.0, l, sl, "FINE", Nums::None, FocusKind::Plain);
-        self.fader(p(8), x0 + 660.0, l, sl, "UNISON", Nums::None, FocusKind::Plain);
-        self.fader(p(9), x0 + 706.0, l, sl, "DETUNE", Nums::None, FocusKind::Plain);
-        self.fader(p(10), x0 + 752.0, l, sl, "SPREAD", Nums::None, FocusKind::Plain);
-        self.fader(p(11), x0 + 798.0, l, sl, "BLEND", Nums::None, FocusKind::Plain);
-        self.fader(p(12), x0 + 844.0, l, sl, "PHASE", Nums::None, FocusKind::Plain);
-        self.stepper(p(13), x0 + 914.0, l, sl, "PHASE\nMODE", Steps::Text(&["FREE", "RAND", "RESET"]));
+
+        let y = BAR_Y[0] + 218.0;
+        self.choice_box(p(13), x, y, 110.0, "PHASE");
         if osc == 1 {
-            self.stepper(ParamId::OscBNoiseMode, x0 + 990.0, l, sl, "NOISE", Steps::Text(&["OFF", "WHITE", "PINK"]));
-            self.stepper(ParamId::OscBSyncMode, x0 + 1066.0, l, sl, "SYNC", Steps::Text(&["OFF", "OSC A", "SELF"]));
-            self.fader(ParamId::OscBSyncRatio, x0 + 1116.0, l, sl, "SYNC\nRATIO", Nums::None, FocusKind::Plain);
-            self.fader(ParamId::OscBFmIndex, x0 + 1162.0, l, sl, "FM\nFROM A", Nums::None, FocusKind::Plain);
-            self.fader(ParamId::OscBAmIndex, x0 + 1208.0, l, sl, "AM\nFROM A", N10R, FocusKind::Plain);
+            self.choice_box(ParamId::OscBNoiseMode, x + 116.0, y, 112.0, "NOISE");
+            self.choice_box(ParamId::OscBSyncMode, x + 234.0, y, 104.0, "SYNC");
+            self.value_box(ParamId::OscBSyncRatio, x + 344.0, y, 98.0, "RATIO");
+            self.value_box(ParamId::OscBFmIndex, x + 448.0, y, 66.0, "FM");
+            self.value_box(ParamId::OscBAmIndex, x + 520.0, y, 66.0, "AM");
+        }
+
+        let (l, sl) = osc_row();
+        let faders: [(usize, &str, Nums); 8] = [
+            (2, "WT POS", N10L),
+            (3, "LEVEL", Nums::None),
+            (4, "PAN", Nums::None),
+            (8, "UNISON", Nums::None),
+            (9, "DETUNE", Nums::None),
+            (10, "SPREAD", Nums::None),
+            (11, "BLEND", Nums::None),
+            (12, "PHASE", Nums::None),
+        ];
+        for ((o, label, nums), fx) in faders.into_iter().zip(spread(x, x + w, 8)) {
+            self.fader(p(o), fx, l, sl, label, nums, FocusKind::Plain);
         }
     }
 
-    /// Per-oscillator output meters (SPEC 6.3 "per-osc level LEDs").
-    fn osc_meters(&mut self, x: f32, label_y: f32, slot: (f32, f32)) {
+    /// Narrow middle column between the oscillators: the sub / noise source
+    /// with a picture of its wave, and the level meters (SPEC 6.3).
+    fn sub_column(&mut self, x0: f32) {
         let cv = self.cv;
-        let (y0, y1) = slot;
+        let x = x0 + 12.0;
+        let w = SUB_W - 24.0;
+        self.selector(ParamId::OscCMode, x, BAR_Y[0] + 30.0, w, "");
+        let rect = cv.r(x, BAR_Y[0] + 58.0, w, 70.0);
+        self.sub_display(rect);
+        self.osc_meters(x, BAR_Y[0] + 140.0, w);
+        let (l, sl) = osc_row();
+        let cx = x0 + SUB_W * 0.5;
+        self.fader(ParamId::OscCLevel, cx - 34.0, l, sl, "LEVEL", Nums::None, FocusKind::Plain);
+        self.fader(ParamId::OscCPitch, cx + 34.0, l, sl, "PITCH", BIPOLAR_L, FocusKind::Plain);
+    }
+
+    /// Two cycles of the sub wave, or a fixed noise pattern, scaled by its level.
+    fn sub_display(&mut self, rect: Rect) {
+        let s = self.cv.s;
+        graph_bg(self, rect);
+        let mode = self.plain(ParamId::OscCMode).round() as usize;
+        let level = self.plain(ParamId::OscCLevel).min(1.0);
+        let inner = rect.shrink2(vec2(6.0, 8.0) * s);
+        let n = 96;
+        let mut rng = crate::dsp::common::Rng::new(31);
+        let mut pink = 0.0;
+        let pts: Vec<Pos2> = (0..=n)
+            .map(|k| {
+                let t = k as f32 / n as f32;
+                let v = match mode {
+                    0 => (t * 2.0 * std::f32::consts::TAU).sin(),
+                    1 => 1.0 - 4.0 * ((t * 2.0).fract() - 0.5).abs(),
+                    2 => rng.next_bipolar(),
+                    _ => {
+                        pink = 0.7 * pink + 0.3 * rng.next_bipolar() * 2.2;
+                        pink.clamp(-1.0, 1.0)
+                    }
+                };
+                pos2(inner.left() + inner.width() * t, inner.center().y - v * inner.height() * 0.5 * (0.2 + 0.8 * level))
+            })
+            .collect();
+        fill_under(&self.pt, &pts, inner.center().y, self.accent.gamma_multiply(0.2));
+        self.pt.add(Shape::line(pts, Stroke::new(1.3 * s, self.accent)));
+    }
+
+    /// Output meters for both oscillators and the master out (SPEC 6.3
+    /// "per-osc level LEDs"), as horizontal bars on a -60 … 0 dB scale.
+    fn osc_meters(&mut self, x: f32, y: f32, w: f32) {
+        let cv = self.cv;
         let fb = &self.st.shared.feedback;
         let values = [fb.osc_meters[0].load(Relaxed), fb.osc_meters[1].load(Relaxed), fb.meters[0].load(Relaxed).max(fb.meters[1].load(Relaxed))];
-        for (k, (name, v)) in ["OSC A", "OSC B", "OUT"].iter().zip(values).enumerate() {
-            let cx = x + k as f32 * 64.0;
-            self.label(cx, label_y, name);
+        for (k, (name, v)) in ["A", "B", "OUT"].iter().zip(values).enumerate() {
+            let yy = y + k as f32 * 22.0;
+            self.text(cv.p(x, yy + 4.0), Align2::LEFT_CENTER, name, 9.5, self.th.legend);
+            let (bx, bw) = (x + 30.0, w - 30.0);
+            self.pt.rect_filled(cv.r(bx, yy, bw, 8.0), cv.round(2.0), self.th.slot);
             let db = 20.0 * v.max(1.0e-6).log10();
             let t = ((db + 60.0) / 60.0).clamp(0.0, 1.0);
-            self.pt.rect_filled(cv.r(cx - 4.0, y0, 8.0, y1 - y0), cv.round(2.0), self.th.slot);
-            let h = t * (y1 - y0);
-            if h > 0.3 {
+            if t * bw > 0.3 {
                 let color = if v > 1.0 { self.th.clip } else { self.th.led };
-                self.pt.rect_filled(cv.r(cx - 4.0, y1 - h, 8.0, h), cv.round(2.0), color);
+                self.pt.rect_filled(cv.r(bx, yy, t * bw, 8.0), cv.round(2.0), color);
             }
         }
     }
@@ -533,16 +606,17 @@ impl G<'_, '_> {
         self.bar(BAR_Y[0], &[(16.0, BW - 12.0, "FILTER", Section::Filter)]);
         self.accent = self.th.accents[Section::Filter as usize];
         let (l, sl) = row(0);
-        self.switch(ParamId::FilterOn, 70.0, l, "ON");
+        self.power(ParamId::FilterOn, 20.0, BAR_Y[0]);
         // Type list: one button per type (the C++ build's icon row).
         let current = self.plain(ParamId::FilterType).round() as usize;
+        let list_top = BAR_Y[0] + 32.0;
         for (i, name) in FILTER_TYPES.iter().enumerate() {
-            let y = BAR_Y[0] + 108.0 + i as f32 * 22.0;
+            let y = list_top + i as f32 * 24.0;
             if self.button(&format!("ftype:{i}"), 28.0, y, 84.0, &name.to_uppercase(), i == current, "FILTER TYPE").clicked() {
                 self.change_plain(ParamId::FilterType, i as f32);
             }
         }
-        let list = cv.r(28.0, BAR_Y[0] + 108.0, 84.0, FILTER_TYPES.len() as f32 * 22.0);
+        let list = cv.r(28.0, list_top, 84.0, FILTER_TYPES.len() as f32 * 24.0);
         self.register("filter.type", ControlKind::Selector, list);
         let graph = cv.r(136.0, BAR_Y[0] + 32.0, 870.0, 360.0);
         self.filter_graph(graph);
@@ -569,13 +643,9 @@ impl G<'_, '_> {
             self.text(cv.p(1046.0, y), Align2::LEFT_CENTER, name, 10.0, self.th.legend);
             self.pt.text(cv.p(1380.0, y), Align2::RIGHT_CENTER, value, cv.mono(13.0), self.accent);
         }
-        self.text(
-            cv.p(1046.0, rl + 106.0),
-            Align2::LEFT_CENTER,
-            "DRAG THE CURVE: SIDEWAYS = CUTOFF, UP/DOWN = RESONANCE",
-            8.0,
-            self.th.legend,
-        );
+        for (k, hint) in ["DRAG THE CURVE: SIDEWAYS = CUTOFF,", "UP / DOWN = RESONANCE"].iter().enumerate() {
+            self.text(cv.p(1046.0, rl + 106.0 + k as f32 * 14.0), Align2::LEFT_CENTER, hint, 8.0, self.th.legend);
+        }
     }
 
     // --------------------------------------------------------------- MATRIX
@@ -641,16 +711,13 @@ impl G<'_, '_> {
         for (x, h) in [(370.0, "SOURCE"), (566.0, "TARGET"), (800.0, "AMOUNT"), (1052.0, "CURVE"), (1130.0, "MUTE")] {
             self.text(cv.p(x, top + 6.0), Align2::LEFT_CENTER, h, 8.5, self.th.legend);
         }
-        if rows.is_empty() {
-            self.text(
-                cv.p(860.0, top + 170.0),
-                Align2::CENTER_CENTER,
-                "DRAG A SOURCE CHIP ONTO ANY FADER, GRAPH OR DISPLAY - OR RIGHT-CLICK A CONTROL",
-                10.0,
-                self.th.legend,
-            );
-            return;
-        }
+        self.text(
+            cv.p(BW - 20.0, top + 6.0),
+            Align2::RIGHT_CENTER,
+            &format!("{} / {MATRIX_SLOTS} ROWS", rows.len()),
+            8.0,
+            self.th.legend,
+        );
         let row_h = 21.0;
         for (i, r) in rows.iter().enumerate() {
             let y = top + 16.0 + i as f32 * row_h;
@@ -728,10 +795,37 @@ impl G<'_, '_> {
                 self.text(cv.p(1216.0, y + 9.5), Align2::LEFT_CENTER, "UNRESOLVED", 8.0, self.th.warning);
             }
         }
+        self.empty_slots(rows.len(), top + 16.0, row_h);
         if let Some((from, to)) = self.st.row_drag {
             if from != to {
                 let y = top + 16.0 + to as f32 * row_h - 1.0;
                 self.pt.line_segment([cv.p(346.0, y), cv.p(BW - 16.0, y)], cv.stroke(2.0, self.th.modulation));
+            }
+        }
+    }
+
+    /// The unused matrix slots as placeholders; a click opens the new-row
+    /// picker (source, then target).
+    fn empty_slots(&mut self, used: usize, top: f32, row_h: f32) {
+        let cv = self.cv;
+        for i in used..MATRIX_SLOTS {
+            let y = top + i as f32 * row_h;
+            let rect = cv.r(346.0, y, BW - 362.0, row_h - 2.0);
+            let key = format!("slot:{i}");
+            let resp = self.ui.interact(rect, Id::new(&key), Sense::click());
+            self.register(&key, ControlKind::Button, rect);
+            let fill = if resp.hovered() { self.th.button_hover.gamma_multiply(0.6) } else { self.th.slot.gamma_multiply(0.22) };
+            self.pt.rect_filled(rect, cv.round(2.0), fill);
+            self.text(cv.p(356.0, y + 9.5), Align2::CENTER_CENTER, &format!("{}", i + 1), 8.0, self.th.step_off);
+            let hint = if i == used {
+                "+  CLICK TO ADD A ROW  -  OR DRAG A SOURCE CHIP ONTO ANY CONTROL, OR RIGHT-CLICK ONE"
+            } else {
+                "+"
+            };
+            let ink = if resp.hovered() || i == used { self.th.legend } else { self.th.step_off };
+            self.text(cv.p(376.0, y + 9.5), Align2::LEFT_CENTER, hint, 8.0, ink);
+            if resp.clicked() {
+                self.st.popup = Some(Popup::NewRow { source: None, at: pos2(368.0, y + row_h) });
             }
         }
     }
@@ -762,29 +856,41 @@ impl G<'_, '_> {
         self.bar(BAR_Y[1], &[(16.0, BW - 12.0, "SPECTRUM", Section::Master)]);
         self.accent = self.th.accents[Section::Fx as usize];
         let (l, sl) = row(0);
-        for (x0, first) in [(16.0, ParamId::FxDistOn), (250.0, ParamId::FxChorusOn)] {
-            let p = |o: usize| ParamId::from_index(first.index() + o);
-            let labels: [&str; 3] = if first == ParamId::FxDistOn { ["DRIVE", "TONE", "MIX"] } else { ["RATE", "DEPTH", "MIX"] };
-            self.switch(p(0), x0 + 34.0, l, "ON");
-            self.fader(p(1), x0 + 90.0, l, sl, labels[0], N10L, FocusKind::Plain);
-            self.fader(p(2), x0 + 136.0, l, sl, labels[1], Nums::None, FocusKind::Plain);
-            self.fader(p(3), x0 + 182.0, l, sl, labels[2], N10R, FocusKind::Plain);
+        for (x0, x1, first, labels) in [
+            (16.0, 250.0, ParamId::FxDistOn, ["DRIVE", "TONE", "MIX"]),
+            (250.0, 484.0, ParamId::FxChorusOn, ["RATE", "DEPTH", "MIX"]),
+        ] {
+            self.power(first, x0 + 4.0, BAR_Y[0]);
+            let xs = spread(x0 + 12.0, x1 - 12.0, 3);
+            self.fader(first.offset(1), xs[0], l, sl, labels[0], N10L, FocusKind::Plain);
+            self.fader(first.offset(2), xs[1], l, sl, labels[1], Nums::None, FocusKind::Plain);
+            self.fader(first.offset(3), xs[2], l, sl, labels[2], N10R, FocusKind::Plain);
         }
         let x0 = 484.0;
-        self.switch(ParamId::FxDelayOn, x0 + 34.0, l, "ON");
-        self.stepper(ParamId::FxDelaySyncMode, x0 + 104.0, l, sl, "SYNC", Steps::Text(&["FREE", "TEMPO"]));
-        self.selector(ParamId::FxDelaySyncDiv, x0 + 124.0, sl.0 + 44.0, 64.0, "DIV");
-        self.fader(ParamId::FxDelayTimeMs, x0 + 226.0, l, sl, "TIME", N10L, FocusKind::Plain);
-        self.fader(ParamId::FxDelayFeedback, x0 + 272.0, l, sl, "FEED-\nBACK", Nums::None, FocusKind::Plain);
-        self.fader(ParamId::FxDelayTone, x0 + 318.0, l, sl, "TONE", Nums::None, FocusKind::Plain);
-        self.fader(ParamId::FxDelayMix, x0 + 364.0, l, sl, "MIX", Nums::None, FocusKind::Plain);
-        self.switch(ParamId::FxDelayPingPong, x0 + 430.0, l, "PING\nPONG");
+        self.power(ParamId::FxDelayOn, x0 + 4.0, BAR_Y[0]);
+        self.stepper(ParamId::FxDelaySyncMode, x0 + 76.0, l, sl, "SYNC", Steps::Text(&["FREE", "TEMPO"]));
+        self.selector(ParamId::FxDelaySyncDiv, x0 + 94.0, sl.0 + 44.0, 64.0, "DIV");
+        let delay = [
+            (ParamId::FxDelayTimeMs, "TIME", N10L),
+            (ParamId::FxDelayFeedback, "FEED-\nBACK", Nums::None),
+            (ParamId::FxDelayTone, "TONE", Nums::None),
+            (ParamId::FxDelayMix, "MIX", Nums::None),
+        ];
+        for ((id, label, nums), x) in delay.into_iter().zip(spread(x0 + 176.0, x0 + 420.0, 4)) {
+            self.fader(id, x, l, sl, label, nums, FocusKind::Plain);
+        }
+        self.switch(ParamId::FxDelayPingPong, x0 + 446.0, l, "PING\nPONG");
         let x0 = 968.0;
-        self.switch(ParamId::FxRevOn, x0 + 34.0, l, "ON");
-        self.fader(ParamId::FxRevSize, x0 + 90.0, l, sl, "SIZE", N10L, FocusKind::Plain);
-        self.fader(ParamId::FxRevDamp, x0 + 136.0, l, sl, "DAMP", Nums::None, FocusKind::Plain);
-        self.fader(ParamId::FxRevPreDelay, x0 + 182.0, l, sl, "PRE\nDELAY", Nums::None, FocusKind::Plain);
-        self.fader(ParamId::FxRevMix, x0 + 228.0, l, sl, "MIX", N10R, FocusKind::Plain);
+        self.power(ParamId::FxRevOn, x0 + 4.0, BAR_Y[0]);
+        let reverb = [
+            (ParamId::FxRevSize, "SIZE", N10L),
+            (ParamId::FxRevDamp, "DAMP", Nums::None),
+            (ParamId::FxRevPreDelay, "PRE\nDELAY", Nums::None),
+            (ParamId::FxRevMix, "MIX", N10R),
+        ];
+        for ((id, label, nums), x) in reverb.into_iter().zip(spread(x0 + 12.0, BW - 24.0, 4)) {
+            self.fader(id, x, l, sl, label, nums, FocusKind::Plain);
+        }
         self.accent = self.th.accents[Section::Master as usize];
         let r = self.cv.r(24.0, BAR_Y[1] + 32.0, BW - 48.0, 156.0);
         self.spectrum_view(r);
@@ -797,8 +903,8 @@ impl G<'_, '_> {
         self.bar(
             BAR_Y[2],
             &[
-                (16.0, 446.0, "AMP ENV", Section::Env),
-                (446.0, 876.0, "MOD ENV", Section::Env),
+                (16.0, 16.0 + ENV_W, "AMP ENV", Section::Env),
+                (16.0 + ENV_W, 16.0 + 2.0 * ENV_W, "MOD ENV", Section::Env),
                 (876.0, BW - 12.0, "MASTER", Section::Master),
             ],
         );
@@ -812,7 +918,7 @@ impl G<'_, '_> {
         );
         self.accent = th.accents[Section::Env as usize];
         self.env_section(0, 16.0);
-        self.env_section(1, 446.0);
+        self.env_section(1, 16.0 + ENV_W);
         self.accent = th.accents[Section::Lfo as usize];
         self.lfo_section(0, 16.0);
         self.lfo_section(1, 576.0);
@@ -822,22 +928,26 @@ impl G<'_, '_> {
         self.quick_sources(1136.0);
     }
 
+    /// One envelope (Serum 2 style): the graph across the whole section, the
+    /// ADSR values and the curve / velocity fields below it.
     fn env_section(&mut self, which: usize, x0: f32) {
-        let (l, sl) = row(2);
-        let (top, bottom) = graph_rows(2);
         let first = if which == 0 { ParamId::EnvAmpAttack } else { ParamId::EnvModAttack };
-        let p = |o: usize| ParamId::from_index(first.index() + o);
-        for (t, name) in [(0.1, "ATTACK"), (0.36, "DECAY"), (0.62, "SUSTAIN"), (0.88, "RELEASE")] {
-            self.text(self.cv.p(x0 + 12.0 + 220.0 * t, l), Align2::CENTER_BOTTOM, name, 9.0, self.th.legend);
-        }
-        let rect = self.cv.r(x0 + 12.0, top, 220.0, bottom - top);
+        let (x, w) = (x0 + 12.0, ENV_W - 24.0);
+        let rect = self.cv.r(x, ENV_GRAPH.0, w, ENV_GRAPH.1 - ENV_GRAPH.0);
         self.env_graph(which, rect);
-        self.fader(p(4), x0 + 262.0, l, sl, "A\nCURVE", BIPOLAR_L, FocusKind::Plain);
-        self.fader(p(5), x0 + 306.0, l, sl, "D\nCURVE", Nums::None, FocusKind::Plain);
-        self.fader(p(6), x0 + 350.0, l, sl, "R\nCURVE", Nums::None, FocusKind::Plain);
-        self.fader(p(7), x0 + 394.0, l, sl, "VELO-\nCITY", N10R, FocusKind::Plain);
+        let field = (w - 3.0 * 6.0) / 4.0;
+        let rows: [[(usize, &str); 4]; 2] = [
+            [(0, "ATK"), (1, "DEC"), (2, "SUS"), (3, "REL")],
+            [(4, "A CRV"), (5, "D CRV"), (6, "R CRV"), (7, "VEL")],
+        ];
+        for (r, fields) in rows.iter().enumerate() {
+            let y = ENV_GRAPH.1 + 6.0 + r as f32 * 26.0;
+            for (k, (o, name)) in fields.iter().enumerate() {
+                self.value_box(first.offset(*o), x + k as f32 * (field + 6.0), y, field, name);
+            }
+        }
         let src = if which == 0 { ModSource::EnvAmp } else { ModSource::EnvMod };
-        let chip = self.cv.r(x0 + 430.0 - 84.0, BAR_Y[2] + 3.0, 78.0, 16.0);
+        let chip = self.cv.r(x0 + ENV_W - 84.0, BAR_Y[2] + 3.0, 78.0, 16.0);
         self.source_chip(src.index(), chip);
     }
 
@@ -845,16 +955,16 @@ impl G<'_, '_> {
         let (l, sl) = row(3);
         let (top, bottom) = graph_rows(3);
         let first = if which == 0 { ParamId::Lfo1Rate } else { ParamId::Lfo2Rate };
-        let p = |o: usize| ParamId::from_index(first.index() + o);
+        let p = |o: usize| first.offset(o);
         let rect = self.cv.r(x0 + 12.0, top - 22.0, 140.0, bottom - top + 22.0);
         self.lfo_graph(which, rect);
-        self.stepper(p(1), x0 + 200.0, l, sl, "SHAPE", Steps::Lfo);
-        self.fader(p(0), x0 + 244.0, l, sl, "RATE", Nums::None, FocusKind::Plain);
+        self.stepper(p(1), x0 + 196.0, l, sl, "SHAPE", Steps::Lfo);
+        self.fader(p(0), x0 + 238.0, l, sl, "RATE", Nums::None, FocusKind::Plain);
         self.stepper(p(2), x0 + 314.0, l, sl, "SYNC", Steps::Text(&["FREE", "TEMPO"]));
-        self.selector(p(3), x0 + 330.0, sl.0 + 44.0, 60.0, "DIV");
-        self.stepper(p(4), x0 + 452.0, l, sl, "RETRIG", Steps::Text(&["FREE", "VOICE", "NOTE"]));
-        self.fader(p(5), x0 + 498.0, l, sl, "PHASE", Nums::None, FocusKind::Plain);
-        self.fader(p(6), x0 + 542.0, l, sl, "SMOOTH", N10R, FocusKind::Plain);
+        self.selector(p(3), x0 + 328.0, sl.0 + 44.0, 60.0, "DIV");
+        self.stepper(p(4), x0 + 442.0, l, sl, "RETRIG", Steps::Text(&["FREE", "VOICE", "NOTE"]));
+        self.fader(p(5), x0 + 484.0, l, sl, "PHASE", Nums::None, FocusKind::Plain);
+        self.fader(p(6), x0 + 532.0, l, sl, "SMOOTH", Nums::None, FocusKind::Plain);
         let src = if which == 0 { ModSource::Lfo1 } else { ModSource::Lfo2 };
         let chip = self.cv.r(x0 + 560.0 - 84.0, BAR_Y[3] + 3.0, 78.0, 16.0);
         self.source_chip(src.index(), chip);
@@ -862,15 +972,16 @@ impl G<'_, '_> {
 
     fn master_section(&mut self, x0: f32) {
         let (l, sl) = row(2);
-        self.fader(ParamId::MasterVolume, x0 + 40.0, l, sl, "VOLUME", N10L, FocusKind::Plain);
-        self.fader(ParamId::MasterPan, x0 + 86.0, l, sl, "PAN", Nums::None, FocusKind::Plain);
-        self.fader(ParamId::MasterTune, x0 + 132.0, l, sl, "TUNE", Nums::None, FocusKind::Plain);
-        self.fader(ParamId::MasterBendRange, x0 + 178.0, l, sl, "BEND", Nums::None, FocusKind::Plain);
-        self.fader(ParamId::MasterPolyphony, x0 + 224.0, l, sl, "VOICES", Nums::None, FocusKind::Plain);
-        self.stepper(ParamId::MasterOversampling, x0 + 290.0, l, sl, "OVER-\nSAMPLE", Steps::Text(&["1X", "2X", "4X"]));
-        self.fader(ParamId::MasterGlide, x0 + 336.0, l, sl, "GLIDE", N10R, FocusKind::Plain);
+        let xs = spread(x0 + 8.0, x0 + 368.0, 7);
+        self.fader(ParamId::MasterVolume, xs[0], l, sl, "VOLUME", N10L, FocusKind::Plain);
+        self.fader(ParamId::MasterPan, xs[1], l, sl, "PAN", Nums::None, FocusKind::Plain);
+        self.fader(ParamId::MasterTune, xs[2], l, sl, "TUNE", Nums::None, FocusKind::Plain);
+        self.fader(ParamId::MasterBendRange, xs[3], l, sl, "BEND", Nums::None, FocusKind::Plain);
+        self.fader(ParamId::MasterPolyphony, xs[4], l, sl, "VOICES", Nums::None, FocusKind::Plain);
+        self.stepper(ParamId::MasterOversampling, xs[5] + 6.0, l, sl, "OVER-\nSAMPLE", Steps::Text(&["1X", "2X", "4X"]));
+        self.fader(ParamId::MasterGlide, xs[6], l, sl, "GLIDE", N10R, FocusKind::Plain);
         let (top, bottom) = graph_rows(2);
-        let rect = self.cv.r(x0 + 380.0, top - 20.0, BW - 12.0 - x0 - 392.0, bottom - top + 20.0);
+        let rect = self.cv.r(x0 + 392.0, top - 20.0, BW - 12.0 - x0 - 400.0, bottom - top + 20.0);
         self.scope(rect);
     }
 

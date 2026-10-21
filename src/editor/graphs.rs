@@ -51,7 +51,7 @@ struct EnvIds {
 
 fn env_ids(which: usize) -> EnvIds {
     let first = if which == 0 { ParamId::EnvAmpAttack } else { ParamId::EnvModAttack };
-    let p = |o: usize| ParamId::from_index(first.index() + o);
+    let p = |o: usize| first.offset(o);
     EnvIds {
         attack: p(0),
         decay: p(1),
@@ -149,6 +149,14 @@ impl G<'_, '_> {
         let rel_zone = inner.right() - sus_end;
         let y_of = |l: f32| inner.bottom() - l * h;
         let hit = |c: Pos2| Rect::from_center_size(c, vec2(18.0, 18.0) * s);
+        // Faint grid: level quarters, and the attack / decay / release zones.
+        let grid = Stroke::new(0.7 * s, self.th.scale.gamma_multiply(0.45));
+        for l in [0.25, 0.5, 0.75] {
+            self.pt.line_segment([pos2(inner.left(), y_of(l)), pos2(inner.right(), y_of(l))], grid);
+        }
+        for x in [inner.left() + zone, inner.left() + 2.0 * zone, sus_end] {
+            self.pt.line_segment([pos2(x, inner.top()), pos2(x, inner.bottom())], grid);
+        }
 
         let geometry = |g: &mut Self| {
             let xa = inner.left() + g.shown(ids.attack) * zone;
@@ -443,40 +451,45 @@ impl G<'_, '_> {
         };
         let current = ((pos * (frames.saturating_sub(1)) as f32).round() as usize).min(frames - 1);
         let inner = rect.shrink2(vec2(10.0, 14.0) * s);
-        let points = 128;
-        // Stacked neighbours, offset up and right like a 3D morph view.
-        let depth = 6.min(frames);
-        for k in (1..depth).rev() {
-            let f = (current + k * (frames / depth).max(1)) % frames;
-            let off = vec2(k as f32 * 5.0, -(k as f32) * 4.0) * s;
-            let data = table.display_frame(f, points);
-            let pts: Vec<Pos2> = data
+        let points = 160;
+        // Perspective stack (Serum style): the whole table recedes up and to
+        // the right, front frame first; the current frame is lit at its depth.
+        let multi = frames > 1;
+        let (span_x, span_y) = if multi { (inner.width() * 0.2, inner.height() * 0.34) } else { (0.0, 0.0) };
+        let wave_w = inner.width() - span_x;
+        let amp = if multi { inner.height() * 0.3 } else { inner.height() * 0.42 };
+        let front_mid = inner.bottom() - amp - if multi { 4.0 * s } else { inner.height() * 0.08 };
+        let origin = |depth: f32| pos2(inner.left() + depth * span_x, front_mid - depth * span_y);
+        let line = |f: usize, depth: f32, scale: f32| -> Vec<Pos2> {
+            let o = origin(depth);
+            table
+                .display_frame(f, points)
                 .iter()
                 .enumerate()
-                .map(|(i, v)| {
-                    pos2(
-                        inner.left() + inner.width() * 0.85 * i as f32 / (points - 1) as f32,
-                        inner.center().y - v * inner.height() * 0.38,
-                    ) + off
-                })
-                .collect();
-            self.pt.add(Shape::line(pts, Stroke::new(0.8 * s, self.accent.gamma_multiply(0.18))));
+                .map(|(i, v)| pos2(o.x + wave_w * i as f32 / (points - 1) as f32, o.y - v * amp * scale))
+                .collect()
+        };
+        let depth_of = |f: usize| if multi { f as f32 / (frames - 1) as f32 } else { 0.0 };
+        if multi {
+            // Floor rails from the front frame's ends to the back frame's.
+            for x in [0.0, wave_w] {
+                let (a, b) = (origin(0.0) + vec2(x, 0.0), origin(1.0) + vec2(x, 0.0));
+                self.pt.line_segment([a, b], Stroke::new(0.8 * s, self.th.scale));
+            }
+            let lines = frames.min(28);
+            for k in (0..lines).rev() {
+                let f = k * (frames - 1) / (lines - 1).max(1);
+                let d = depth_of(f);
+                let alpha = 0.12 + 0.22 * (1.0 - d);
+                self.pt.add(Shape::line(line(f, d, 1.0), Stroke::new(0.9 * s, self.accent.gamma_multiply(alpha))));
+            }
         }
         let level = self.plain(level_id);
-        let data = table.display_frame(current, points);
-        let mid = inner.center().y;
-        let pts: Vec<Pos2> = data
-            .iter()
-            .enumerate()
-            .map(|(i, v)| {
-                pos2(
-                    inner.left() + inner.width() * 0.85 * i as f32 / (points - 1) as f32,
-                    mid - v * inner.height() * 0.38 * (0.25 + 0.75 * level.min(1.0)),
-                )
-            })
-            .collect();
+        let d = depth_of(current);
+        let pts = line(current, d, 0.25 + 0.75 * level.min(1.0));
+        let mid = origin(d).y;
         fill_under(&self.pt, &pts, mid, self.accent.gamma_multiply(0.22));
-        self.pt.add(Shape::line(pts, Stroke::new(1.6 * s, self.accent)));
+        self.pt.add(Shape::line(pts, Stroke::new(1.8 * s, self.th.wave_hot)));
         // Position strip along the bottom edge.
         let y = rect.bottom() - 5.0 * s;
         self.pt.line_segment([pos2(inner.left(), y), pos2(inner.right(), y)], Stroke::new(1.0 * s, self.th.scale));

@@ -75,24 +75,33 @@ scope and the performance modulation sources.
 - Stepped faders: drag, click a position or its label, or use the wheel.
   Long choice lists (wavetable, tempo division) are boxes with arrows; clicking
   the name opens the full list.
-- OSC: a wave display per oscillator shows the current frame with neighbouring
-  frames stacked behind it; while notes play it follows the frame actually being
-  played. Drag it sideways to scrub the WT position.
+- OSC: osc A and osc B fill the left and right halves (after Serum 2), with the
+  sub / noise source and the level meters in a narrow column between them. Each
+  half has a power LED in its bar, the table selector, OCT / SEMI / FINE value
+  fields (drag vertically, wheel, double-click resets), and a large display of
+  the whole table in perspective with the current frame lit; while notes play it
+  follows the frame actually being played. Drag it sideways to scrub the WT
+  position.
 - WT: frame list, draw grid with pencil / line / smooth tools, morph stack,
   add / duplicate / delete / move / normalise, import (WAV, `.wt`) and export
   (WAV, `.wt`) through `zenity`. User tables go to `$XDG_DATA_HOME/double-slit/tables`.
 - FILTER: drag the response curve sideways for cutoff (log axis) and up/down
   for resonance; the output and pre-filter spectra run behind it, and a second
   curve shows the cutoff the newest voice actually gets.
-- Envelopes: drag the handles - attack time, decay time and sustain level, release
-  time. A dot follows the newest voice.
+- Envelopes: the graph spans the whole section; drag the handles - attack time,
+  decay time and sustain level, release time. A dot follows the newest voice.
+  Below it, every envelope value (ATK, DEC, SUS, REL, the three curves, VEL) is a
+  value field.
 - Modulation: drag a source chip (MATRIX palette, the envelope and LFO bars, the
-  SOURCES section) onto any modulatable control to add a +50 % row. Right-click a
+  SOURCES section) onto any modulatable control; an amount scale opens with the
+  pointer on +50 %, and a click on it adds the row (a click outside cancels).
+  Osc pitch takes modulation on OCT, SEMI and FINE. Right-click a
   control to see, adjust or remove its rows or add a source. Modulated controls
   show their range in the modulation colour, brighter while the source moves.
 - MATRIX: source, target, amount, curve, mute and delete per row; drag the
-  handle on the left to reorder. Unresolved rows from patches are shown, kept and
-  re-saved.
+  handle on the left to reorder. All 16 slots are shown; clicking an empty one
+  picks a source, then a target, and adds the row at +50 %. Unresolved rows from
+  patches are shown, kept and re-saved.
 - Header: factory preset browser, value readout, CPU, voice LEDs, theme chips
   (Tokyo Night default, Catppuccin, Dracula, Gruvbox; saved with the project).
 

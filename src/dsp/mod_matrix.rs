@@ -247,6 +247,8 @@ fn target_table() -> &'static TargetTable {
             t.targets.push(ModTargetDesc { param, range, log_scale });
         };
         add(OscAWtPos, 100.0, false);
+        add(OscAOctave, 6.0, false);
+        add(OscASemi, 24.0, false);
         add(OscAFine, 1200.0, false);
         add(OscAUniDetune, 100.0, false);
         add(OscAPhase, 360.0, false);
@@ -254,6 +256,8 @@ fn target_table() -> &'static TargetTable {
         add(OscAPan, 1.0, false);
 
         add(OscBWtPos, 100.0, false);
+        add(OscBOctave, 6.0, false);
+        add(OscBSemi, 24.0, false);
         add(OscBFine, 1200.0, false);
         add(OscBUniDetune, 100.0, false);
         add(OscBPhase, 360.0, false);

@@ -3,6 +3,7 @@
 //! nih-plug's CLAP wrapper does, and checks gesture balance.
 
 use super::*;
+use crate::dsp::common::MATRIX_SLOTS;
 use crate::dsp::mod_matrix::{mod_source_id, mod_target_index_for_param, ModSource};
 use crate::params::ExtraState;
 use nih_plug::wrapper::state::PluginState;
@@ -249,8 +250,8 @@ fn scale_of(c: &ControlInfo, canvas_width: f32) -> f32 {
     c.rect.width() / canvas_width
 }
 
-/// Every parameter is reachable from some tab. Resonance and the sustain
-/// levels are the vertical axis of the filter graph and the envelope handles.
+/// Every parameter is reachable from some tab. Resonance is only the
+/// vertical axis of the filter graph.
 #[test]
 fn every_parameter_has_a_control() {
     let mut h = Harness::new(3);
@@ -264,7 +265,7 @@ fn every_parameter_has_a_control() {
         .map(|d| d.id_string.as_str())
         .filter(|id| !seen.contains(*id))
         .collect();
-    assert_eq!(missing, ["filter.res", "envAmp.sustain", "envMod.sustain"]);
+    assert_eq!(missing, ["filter.res"]);
 }
 
 /// Every fader on the OSC tab and the bottom half follows a drag by the full
@@ -309,6 +310,42 @@ fn double_click_resets_and_scroll_changes() {
     h.double_click(c.rect.center());
     h.settle();
     assert!((h.value("oscA.level") - default).abs() < 1e-4);
+    h.assert_clean();
+}
+
+/// Value boxes (OSC pitch, sync ratio, FM, AM) follow a vertical drag over
+/// their travel, step with the wheel and reset on double-click.
+#[test]
+fn value_boxes_drag_scroll_and_reset() {
+    let mut h = Harness::new(3);
+    let boxes = h.controls(ControlKind::ValueBox);
+    let names: Vec<&str> = boxes.iter().map(|c| c.name.as_str()).collect();
+    for name in ["oscA.octave", "oscA.semi", "oscA.fine", "oscB.syncRatio", "oscB.fmIndex", "oscB.amIndex"] {
+        assert!(names.contains(&name), "{name} is not a value box: {names:?}");
+    }
+    for c in &boxes {
+        let before = h.value(&c.name);
+        let up = before < 0.5;
+        let px = 0.3 * widgets::BOX_TRAVEL * (c.rect.height() / 20.0);
+        h.drag(c.rect.center(), vec2(0.0, if up { -px } else { px }), 12);
+        h.settle();
+        let change = h.value(&c.name) - before;
+        assert!(if up { change > 0.2 } else { change < -0.2 }, "{}: moved {change:.3}", c.name);
+        h.double_click(c.rect.center());
+        h.settle();
+        assert!((h.value(&c.name) - before).abs() < 1e-4, "{} reset", c.name);
+    }
+    let c = h.control("oscA.semi");
+    h.move_to(c.rect.center());
+    h.run(1);
+    h.events.push(Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, 60.0),
+        modifiers: Modifiers::default(),
+    });
+    h.run(1);
+    h.settle();
+    assert!(h.plain("oscA.semi") >= 1.0, "{}", h.plain("oscA.semi"));
     h.assert_clean();
 }
 
@@ -359,6 +396,21 @@ fn switches_toggle() {
     h.click(c.rect.center());
     h.settle();
     assert_eq!(h.plain("oscB.on"), 0.0);
+    // Module power LEDs in the section bars.
+    for (tab, names) in [
+        (Tab::Filter, &["filter.on"][..]),
+        (Tab::Fx, &["fx.dist.on", "fx.chorus.on", "fx.delay.on", "fx.rev.on", "fx.delay.pingPong"][..]),
+    ] {
+        h.open_tab(tab);
+        for name in names {
+            let c = h.control(name);
+            assert_eq!(c.kind, ControlKind::Switch, "{name}");
+            let before = h.plain(name);
+            h.click(c.rect.center());
+            h.settle();
+            assert_eq!(h.plain(name), 1.0 - before, "{name}");
+        }
+    }
     h.assert_clean();
 }
 
@@ -369,7 +421,7 @@ fn envelope_handles_drag_times_and_sustain() {
     let attack = h.control("envAmp.attack");
     assert_eq!(attack.kind, ControlKind::Handle);
     let s = attack.rect.width() / 18.0;
-    let zone = 0.3 * (220.0 - 16.0) * s;
+    let zone = 0.3 * (tabs::ENV_W - 24.0 - 16.0) * s;
     let before = h.value("envAmp.attack");
     h.drag(attack.rect.center(), vec2(0.25 * zone, 0.0), 10);
     h.settle();
@@ -377,7 +429,7 @@ fn envelope_handles_drag_times_and_sustain() {
 
     let decay = h.control("envAmp.decay");
     let (d0, s0) = (h.value("envAmp.decay"), h.value("envAmp.sustain"));
-    let height = (BAR_Y[2] + 186.0 - (BAR_Y[2] + 56.0) - 16.0) * s;
+    let height = (tabs::ENV_GRAPH.1 - tabs::ENV_GRAPH.0 - 16.0) * s;
     h.drag(decay.rect.center(), vec2(0.2 * zone, 0.2 * height), 10);
     h.settle();
     assert!((h.value("envAmp.decay") - d0 - 0.2).abs() < 0.03);
@@ -410,25 +462,63 @@ fn filter_graph_drags_cutoff_and_resonance() {
     h.assert_clean();
 }
 
-/// Dragging a source chip onto a fader adds a matrix row (+50 %), and the
-/// fader then shows a modulation range (SPEC 4.4).
+/// Dropping a source chip on a fader opens an amount scale with the drop
+/// point on +50 %; a click on the scale adds the row with the amount under
+/// the pointer, and the fader then shows a modulation range (SPEC 4.4).
 #[test]
 fn dropping_a_source_on_a_fader_adds_a_row() {
     let mut h = Harness::new(2);
     let chip = h.control(&format!("chip:{}", mod_source_id(ModSource::Lfo1.index())));
     let fader = h.control("oscA.wtPos");
     h.drag(chip.rect.center(), fader.rect.center() - chip.rect.center(), 12);
+    assert!(h.rows().is_empty(), "the drop alone must not add a row");
+    assert!(matches!(h.state.popup, Some(Popup::DropAmount { .. })));
+    assert!(h.state.drag_source.is_none());
+    let scale = h.control("drop:scale");
+    let plus_50 = scale.rect.left() + scale.rect.width() * 0.75;
+    assert!((plus_50 - fader.rect.center().x).abs() < 1.0, "drop point sits on +50 %");
+    h.click(pos2(plus_50, scale.rect.center().y));
+    assert!(h.state.popup.is_none());
     let rows = h.rows();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].source, ModSource::Lfo1.index());
     assert_eq!(rows[0].target, mod_target_index_for_param(ParamId::OscAWtPos));
-    assert!((rows[0].amount - 0.5).abs() < 1e-6);
-    assert!(h.state.drag_source.is_none());
+    assert!((rows[0].amount - 0.5).abs() < 0.02, "{}", rows[0].amount);
     let target = mod_target_index_for_param(ParamId::OscAWtPos).unwrap();
     assert!(h.state.mod_info[target].pos > 0.4);
-    // Dropping on empty panel adds nothing.
+
+    // The second click picks any amount on the scale.
+    h.drag(chip.rect.center(), fader.rect.center() - chip.rect.center(), 12);
+    let scale = h.control("drop:scale");
+    h.click(pos2(scale.rect.left() + scale.rect.width() * 0.25, scale.rect.center().y));
+    let rows = h.rows();
+    assert_eq!(rows.len(), 2);
+    assert!((rows[1].amount + 0.5).abs() < 0.02, "{}", rows[1].amount);
+
+    // A click outside the scale cancels; dropping on empty panel adds nothing.
+    h.drag(chip.rect.center(), fader.rect.center() - chip.rect.center(), 12);
+    h.click(pos2(2.0, BH - 2.0));
+    assert!(h.state.popup.is_none());
     h.drag(chip.rect.center(), vec2(0.0, -200.0), 8);
-    assert_eq!(h.rows().len(), 1);
+    assert!(h.state.popup.is_none());
+    assert_eq!(h.rows().len(), 2);
+    h.assert_clean();
+}
+
+/// Osc pitch is modulatable: octave and semi take dropped sources too.
+#[test]
+fn oscillator_pitch_takes_modulation() {
+    let mut h = Harness::new(2);
+    let chip = h.control(&format!("chip:{}", mod_source_id(ModSource::EnvMod.index())));
+    for name in ["oscA.octave", "oscB.semi"] {
+        let control = h.control(name);
+        h.drag(chip.rect.center(), control.rect.center() - chip.rect.center(), 12);
+        let scale = h.control("drop:scale");
+        h.click(pos2(scale.rect.right() - 1.0, scale.rect.center().y));
+        let last = h.rows().last().cloned().unwrap();
+        assert_eq!(last.target, mod_target_index_for_param(Harness::id(name)), "{name}");
+        assert!(last.amount > 0.95);
+    }
     h.assert_clean();
 }
 
@@ -448,6 +538,41 @@ fn right_click_popover_adds_and_removes_rows() {
     let remove = h.control("pop-remove:0");
     h.click(remove.rect.center());
     assert!(h.rows().is_empty());
+}
+
+/// Empty matrix slots open a two-step picker: source, then target; the row
+/// lands at +50 %. Clicking outside the picker adds nothing.
+#[test]
+fn empty_matrix_slot_adds_a_row() {
+    let mut h = Harness::new(2);
+    h.open_tab(Tab::Matrix);
+    assert!(h.try_control(&format!("slot:{}", MATRIX_SLOTS - 1)).is_some());
+    let slot = h.control("slot:0");
+    h.click(slot.rect.center());
+    assert!(matches!(h.state.popup, Some(Popup::NewRow { source: None, .. })));
+    let k = palette_sources(h.state.cc_pick).iter().position(|s| *s == ModSource::Lfo2.index()).unwrap();
+    let src = h.control(&format!("newsrc:{k}"));
+    h.click(src.rect.center());
+    h.run(1);
+    assert!(matches!(h.state.popup, Some(Popup::NewRow { source: Some(_), .. })));
+    assert!(h.rows().is_empty());
+    let t = mod_target_index_for_param(ParamId::FilterCutoff).unwrap();
+    let tgt = h.control(&format!("newtgt:{t}"));
+    h.click(tgt.rect.center());
+    assert!(h.state.popup.is_none());
+    let rows = h.rows();
+    assert_eq!(rows.len(), 1);
+    assert_eq!((rows[0].source, rows[0].target), (ModSource::Lfo2.index(), Some(t)));
+    assert!((rows[0].amount - 0.5).abs() < 1e-6);
+    // The used slot is a row now; the next one is the first empty slot.
+    h.run(1);
+    assert!(h.try_control("slot:0").is_none());
+    let slot = h.control("slot:1");
+    h.click(slot.rect.center());
+    h.click(pos2(2.0, BH - 2.0));
+    assert!(h.state.popup.is_none());
+    assert_eq!(h.rows().len(), 1);
+    h.assert_clean();
 }
 
 /// The MATRIX tab edits rows: amount, curve, mute, source, delete.

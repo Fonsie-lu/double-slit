@@ -161,6 +161,12 @@ impl ParamId {
         unsafe { std::mem::transmute::<usize, ParamId>(index) }
     }
 
+    /// The parameter `o` places after this one: the members of a module
+    /// block (`OscAOn.offset(5)` is `OscAOctave`).
+    pub fn offset(self, o: usize) -> ParamId {
+        ParamId::from_index(self as usize + o)
+    }
+
     pub fn desc(self) -> &'static ParamDesc {
         &table().descs[self as usize]
     }
@@ -552,7 +558,7 @@ impl Builder {
     /// Osc A and B share their first 14 slots in identical order; the helper
     /// keeps the two blocks provably in sync.
     fn osc(&mut self, prefix: &str, module: &'static str, first: ParamId) {
-        let p = |o: usize| ParamId::from_index(first as usize + o);
+        let p = |o: usize| first.offset(o);
         let id = |leaf: &str| format!("{prefix}.{leaf}");
         self.choice(p(0), &id("on"), "On", module, 1.0, ON_OFF);
         self.choice(p(1), &id("table"), "Table", module, 2.0, TABLE_NAMES);
@@ -572,7 +578,7 @@ impl Builder {
 
     #[allow(clippy::too_many_arguments)]
     fn env(&mut self, prefix: &str, module: &'static str, first: ParamId, a: f32, d: f32, s: f32, r: f32) {
-        let p = |o: usize| ParamId::from_index(first as usize + o);
+        let p = |o: usize| first.offset(o);
         let id = |leaf: &str| format!("{prefix}.{leaf}");
         self.skewed(p(0), &id("attack"), "Attack", module, 0.0, 10.0, a, "s", 0.3);
         self.skewed(p(1), &id("decay"), "Decay", module, 0.0, 10.0, d, "s", 0.3);
@@ -585,7 +591,7 @@ impl Builder {
     }
 
     fn lfo(&mut self, prefix: &str, module: &'static str, first: ParamId, rate: f32) {
-        let p = |o: usize| ParamId::from_index(first as usize + o);
+        let p = |o: usize| first.offset(o);
         let id = |leaf: &str| format!("{prefix}.{leaf}");
         self.skewed(p(0), &id("rate"), "Rate", module, 0.01, 40.0, rate, "Hz", 2.0);
         self.choice(p(1), &id("shape"), "Shape", module, 0.0, LFO_SHAPES);

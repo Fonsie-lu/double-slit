@@ -14,6 +14,10 @@ use crate::dsp::mod_matrix::{mod_source_display_name, mod_target, mod_target_ind
 use crate::dsp::params::ParamId;
 use crate::params::DoubleSlitParams;
 
+/// Smallest text size in canvas pixels; smaller requests are raised to it so
+/// the dense legends (matrix rows, chips, popups) stay readable.
+pub const MIN_FONT: f32 = 11.0;
+
 /// Maps canvas coordinates to screen coordinates.
 #[derive(Clone, Copy)]
 pub struct Cv {
@@ -32,10 +36,10 @@ impl Cv {
         self.r(cx - w * 0.5, cy - h * 0.5, w, h)
     }
     pub fn font(&self, size: f32) -> FontId {
-        FontId::new(size * self.s, FontFamily::Name("panel".into()))
+        FontId::new(size.max(MIN_FONT) * self.s, FontFamily::Name("panel".into()))
     }
     pub fn mono(&self, size: f32) -> FontId {
-        FontId::new(size * self.s, FontFamily::Name("oled".into()))
+        FontId::new(size.max(MIN_FONT) * self.s, FontFamily::Name("oled".into()))
     }
     pub fn stroke(&self, w: f32, c: Color32) -> Stroke {
         Stroke::new(w * self.s, c)
@@ -71,6 +75,8 @@ pub enum Steps {
 
 /// Fader slot travel in canvas pixels.
 pub const TRAVEL: f32 = 110.0;
+/// Vertical drag distance across the full range of a value box.
+pub const BOX_TRAVEL: f32 = 160.0;
 
 pub struct G<'a, 'b> {
     pub ui: &'a Ui,
@@ -89,6 +95,24 @@ impl G<'_, '_> {
 
     pub fn text(&self, pos: Pos2, align: Align2, text: &str, size: f32, color: Color32) {
         self.pt.text(pos, align, text, self.cv.font(size), color);
+    }
+
+    /// Width of `text` in the panel font, in canvas pixels.
+    pub fn text_w(&self, text: &str, size: f32) -> f32 {
+        let font = self.cv.font(size);
+        self.ui.fonts(|f| f.layout_no_wrap(text.to_owned(), font, Color32::WHITE).size().x) / self.cv.s
+    }
+
+    /// Bipolar amount (-1 … +1) as a bar filled from the centre of `rect`.
+    pub fn bipolar_fill(&self, rect: Rect, amount: f32) {
+        self.pt.rect_filled(rect, self.cv.round(2.0), self.th.slot);
+        let mid = rect.center().x;
+        let end = mid + amount.clamp(-1.0, 1.0) * rect.width() * 0.5;
+        self.pt.rect_filled(
+            Rect::from_x_y_ranges(mid.min(end)..=mid.max(end), rect.y_range()),
+            self.cv.round(2.0),
+            self.th.modulation,
+        );
     }
 
     /// Multi-line label, bottom line sitting on `y`.
@@ -388,18 +412,22 @@ impl G<'_, '_> {
         self.label(x, label_y, label);
         self.scale_ticks(x, slot, nums);
         self.slot(x, slot);
-        if let Some((lo, hi, activity)) = self.mod_extent(id) {
-            let cv = self.cv;
-            let (a, b) = (y1 - lo * (y1 - y0), y1 - hi * (y1 - y0));
-            let color = self.th.modulation.gamma_multiply(0.55 + 0.45 * activity.clamp(0.0, 1.0));
-            self.pt.rect_filled(
-                Rect::from_two_pos(cv.p(x + 5.0, a), cv.p(x + 8.0, b)),
-                cv.round(1.0),
-                color,
-            );
-        }
+        self.mod_range(x, slot, id);
         let v = self.shown(id);
         self.cap(x, y1 - v * (y1 - y0), 20.0, resp.dragged());
+    }
+
+    /// Modulation range of `id` drawn beside a fader slot, brighter while the
+    /// source moves.
+    fn mod_range(&mut self, x: f32, slot: (f32, f32), id: ParamId) {
+        let Some((lo, hi, activity)) = self.mod_extent(id) else {
+            return;
+        };
+        let cv = self.cv;
+        let (y0, y1) = slot;
+        let (a, b) = (y1 - lo * (y1 - y0), y1 - hi * (y1 - y0));
+        let color = self.th.modulation.gamma_multiply(0.55 + 0.45 * activity.clamp(0.0, 1.0));
+        self.pt.rect_filled(Rect::from_two_pos(cv.p(x + 5.0, a), cv.p(x + 8.0, b)), cv.round(1.0), color);
     }
 
     /// Fader with detents; positions are labelled with text or icons on the
@@ -415,6 +443,7 @@ impl G<'_, '_> {
         let eid = Id::new(("step", id));
         let resp = self.ui.interact(rect, eid, Sense::click_and_drag());
         self.register(&id.desc().id_string, ControlKind::Stepper, rect);
+        self.mod_target(id, rect, &resp);
 
         let current = (self.shown(id) * last).round() as usize;
         let mut target = None;
@@ -462,6 +491,7 @@ impl G<'_, '_> {
             self.step_label(steps, i, x - 14.0, y, i == shown);
         }
         self.slot(x, slot);
+        self.mod_range(x, slot, id);
         self.cap(x, pos_y(shown), 20.0, resp.dragged());
     }
 
@@ -483,6 +513,16 @@ impl G<'_, '_> {
     /// Box showing a choice parameter's value with arrows either side. Arrows
     /// and the wheel step; clicking the name opens the full list.
     pub fn selector(&mut self, id: ParamId, x: f32, y: f32, w: f32, label: &str) {
+        self.selector_with(id, x, y, w, label, "");
+    }
+
+    /// Selector with its name inside the box, left of the value.
+    pub fn choice_box(&mut self, id: ParamId, x: f32, y: f32, w: f32, name: &str) {
+        self.selector_with(id, x, y, w, "", name);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn selector_with(&mut self, id: ParamId, x: f32, y: f32, w: f32, label: &str, name: &str) {
         let cv = self.cv;
         let d = id.desc();
         let rect = cv.r(x, y, w, 20.0);
@@ -530,7 +570,12 @@ impl G<'_, '_> {
             StrokeKind::Inside,
         );
         let text = self.value_text(id).to_uppercase();
-        self.text(rect.center(), Align2::CENTER_CENTER, &text, 9.5, self.accent);
+        if name.is_empty() {
+            self.text(rect.center(), Align2::CENTER_CENTER, &text, 9.5, self.accent);
+        } else {
+            self.text(cv.p(x + 16.0, y + 10.0), Align2::LEFT_CENTER, name, 9.5, self.th.legend);
+            self.text(cv.p(x + w - 16.0, y + 10.0), Align2::RIGHT_CENTER, &text, 9.5, self.accent);
+        }
         for (cx, dir) in [(x + 7.0, -1.0), (x + w - 7.0, 1.0)] {
             let c = cv.p(cx, y + 10.0);
             self.pt.add(Shape::convex_polygon(
@@ -538,6 +583,60 @@ impl G<'_, '_> {
                 self.th.legend,
                 Stroke::NONE,
             ));
+        }
+    }
+
+    /// Compact numeric field (Serum style): name on the left, value on the
+    /// right. Drag vertically (Shift for fine), wheel, double-click resets;
+    /// modulatable like a fader, with the range drawn along the bottom edge.
+    pub fn value_box(&mut self, id: ParamId, x: f32, y: f32, w: f32, name: &str) {
+        let cv = self.cv;
+        let rect = cv.r(x, y, w, 20.0);
+        self.register(&id.desc().id_string, ControlKind::ValueBox, rect);
+        let resp = self.continuous_input(id, rect, BOX_TRAVEL, FocusKind::Plain);
+        self.mod_target(id, rect, &resp);
+        let hot = resp.hovered() || resp.dragged();
+        self.pt.rect_filled(rect, cv.round(3.0), self.th.slot);
+        self.pt.rect_stroke(
+            rect,
+            cv.round(3.0),
+            Stroke::new(1.0 * cv.s, if hot { self.accent } else { self.th.scale }),
+            StrokeKind::Inside,
+        );
+        self.text(cv.p(x + 7.0, y + 10.0), Align2::LEFT_CENTER, name, 9.5, self.th.legend);
+        // Pitch fields read like Serum's "OCT +2": the name carries the unit.
+        let d = id.desc();
+        let text = match d.unit {
+            "oct" | "st" | "ct" => match self.plain(id).round() {
+                0.0 => "0".to_owned(),
+                v => format!("{v:+.0}"),
+            },
+            _ => self.value_text(id).to_uppercase(),
+        };
+        self.text(cv.p(x + w - 7.0, y + 10.0), Align2::RIGHT_CENTER, &text, 9.5, self.accent);
+        if let Some((lo, hi, activity)) = self.mod_extent(id) {
+            let color = self.th.modulation.gamma_multiply(0.55 + 0.45 * activity.clamp(0.0, 1.0));
+            let (a, b) = (x + 3.0 + lo * (w - 6.0), x + 3.0 + hi * (w - 6.0));
+            self.pt.rect_filled(Rect::from_two_pos(cv.p(a, y + 16.0), cv.p(b.max(a + 1.0), y + 18.5)), cv.round(1.0), color);
+        }
+    }
+
+    /// On/off toggle sitting at the left end of a section bar: an LED in a
+    /// dark square. Registered as a switch.
+    pub fn power(&mut self, id: ParamId, x: f32, bar_y: f32) {
+        let cv = self.cv;
+        let on = self.plain(id) > 0.5;
+        let rect = cv.r(x, bar_y + 2.0, 18.0, 18.0);
+        let resp = self.ui.interact(rect, Id::new(("power", id)), Sense::click());
+        self.register(&id.desc().id_string, ControlKind::Switch, rect);
+        let face = if resp.hovered() { self.th.button_hover } else { self.th.button };
+        self.pt.rect_filled(rect, cv.round(3.0), face);
+        self.led(rect.center(), if on { 1.0 } else { 0.0 });
+        if resp.clicked() {
+            self.change_plain(id, if on { 0.0 } else { 1.0 });
+        }
+        if resp.hovered() {
+            self.focus_param(id, FocusKind::Plain);
         }
     }
 
