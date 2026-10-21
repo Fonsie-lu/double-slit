@@ -841,6 +841,39 @@ mod tests {
         assert!(peak > 0.05, "{peak}");
     }
 
+    /// Rising zero crossings per second of the left channel.
+    fn crossing_rate(out: &Render, sample_rate: f32) -> f32 {
+        let n = out.left.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count();
+        n as f32 * sample_rate / out.left.len() as f32
+    }
+
+    #[test]
+    fn octave_and_semi_modulation_move_the_pitch() {
+        // Stepped in the host, continuous under modulation; soft-limited at
+        // the range edge like every target (base 0, headroom 12 st / 3 oct).
+        let render = |target: Option<(&str, f32)>| {
+            let mut s = synth(48_000.0, 128);
+            s.shared().set_table(0, Arc::new(Wavetable::make_factory(0)));
+            s.set_param(ParamId::OscATable, 0.0);
+            s.set_param(ParamId::OscBOn, 0.0);
+            if let Some((id, amount)) = target {
+                add_row(&s, ModSource::ModWheel.index(), id, amount);
+            }
+            s.set_mod_wheel(1.0);
+            s.note_on(0, 57, 1.0, 1);
+            render_blocks(&mut s, 8, 128);
+            crossing_rate(&render_blocks(&mut s, 150, 128), 48_000.0)
+        };
+        let base = render(None);
+        assert!((base / 220.0 - 1.0).abs() < 0.02, "{base}");
+        let semi = 12.0 * (24.0 * 0.25 / 12.0_f32).tanh();
+        let up = render(Some(("oscA.semi", 0.25)));
+        assert!((up / (base * (semi / 12.0).exp2()) - 1.0).abs() < 0.02, "{up}");
+        let oct = 3.0 * (6.0 * -0.25 / 3.0_f32).tanh();
+        let down = render(Some(("oscA.octave", -0.25)));
+        assert!((down / (base * oct.exp2()) - 1.0).abs() < 0.02, "{down}");
+    }
+
     #[test]
     fn polyphony_limit_steals_oldest_note() {
         let mut s = synth(48_000.0, 128);

@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Double Slit (vendor Fonsie Audio) is a Serum-inspired polyphonic wavetable synth plugin, CLAP + VST3, built on nih-plug with a custom-painted nih_plug_egui editor (egui 0.31). It is a Rust port of the C++/JUCE "opus-serum" (in git history before the `nih-plug-port` branch). `SPEC.md` is the original requirements document; comments cite its sections ("SPEC 4.3") — keep that convention. `README.md` lists the deviations. The GUI follows the sibling projects `~/tools/drift-synth` and `~/tools/juno-clone`.
+Double Slit (vendor Fonsie Audio) is a Serum-inspired polyphonic wavetable synth plugin, CLAP + VST3, built on nih-plug with a custom-painted nih_plug_egui editor (egui 0.31). It is a Rust port of the C++/JUCE "opus-serum" (not in this repository; `SPEC.md` still describes the JUCE stack). `SPEC.md` is the original requirements document; comments cite its sections ("SPEC 4.3") — keep that convention. `README.md` lists the deviations. The GUI follows the sibling projects `~/tools/drift-synth` and `~/tools/juno-clone`.
 
 ## Commands
 
@@ -12,6 +12,7 @@ cargo test --lib dsp::filters                # one module's tests
 cargo test --lib editor::tests::matrix       # editor tests by name filter
 cargo clippy --all-targets
 cargo run --release --example bench          # SPEC 9 performance cases (print % of one core)
+cargo run --profile profiling --example bench # release + debug symbols, for perf
 
 RUSTFLAGS="-C target-cpu=x86-64-v3" cargo xtask bundle double_slit --release   # -> target/bundled/
 ./install.sh                                 # build, symlink into ~/.clap and ~/.vst3 (--help for options)
@@ -45,17 +46,18 @@ Two layers with a hard boundary:
 
 ### Engine
 
-`Synth` owns the parameter array, voice pool (16 + 4 slots for 10 ms steal fades), global LFOs, oversampling (1/2/4×, oscillators + filter only; envelopes, LFOs and matrix at the base rate), the FX chain and the denormal guard. `Voice` runs 2 oscillators + sub/noise → filter → VCA with per-sample matrix evaluation. Modulation is soft-limited against the headroom to the range edge (`Voice::modulated`), never around the centre. Wavetables: fixed 2048-sample frames, ≤256 frames, 11-level FFT mip chain; factory frames RMS-normalised; `factory_index()` is `None` after any edit, which makes patches embed the samples. Patches are the C++ JSON format (schema 1); unresolved matrix rows are kept and re-saved verbatim. Factory presets are built in code (`dsp/presets.rs`, `(ParamId, value)` lists plus matrix rows), not files; `tests/no_alloc.rs` renders every one.
+`Synth` owns the parameter array, voice pool (16 + 4 slots for 10 ms steal fades), global LFOs, oversampling (1/2/4×, oscillators + filter only; envelopes, LFOs and matrix at the base rate), the FX chain and the denormal guard. `Voice` runs 2 oscillators + sub/noise → filter → VCA with per-sample matrix evaluation. Modulation is soft-limited against the headroom to the range edge (`Voice::modulated`), never around the centre. Wavetables: fixed 2048-sample frames, ≤256 frames, 11-level FFT mip chain; factory frames RMS-normalised; `factory_index()` is `None` after any edit, which makes patches embed the samples. Patches are the C++ JSON format (schema 1); unresolved matrix rows are kept and re-saved verbatim. Factory presets are built in code (`dsp/presets.rs`, pure functions returning `PatchData`); `tests/no_alloc.rs` renders every one, so a new preset is covered automatically.
 
 ### Editor (`src/editor/`)
 
-Painted on a fixed 1400×905 canvas (`BW`/`BH`) through `Cv`, scaled to the window. `mod.rs`: state, header, tabs, popups, drag-and-drop; `widgets.rs`: `G` (param I/O, faders, knobs, value fields, steppers, selectors, switches, buttons, chips); `graphs.rs`: envelope/filter graphs with handles, the 3D/2D wavetable display, LFO, scope, spectrum; `tabs.rs`: the five tabs (rows 0–1) and the bottom half (rows 2–3). The FILTER/FX/WT/MATRIX tabs use faders like the sibling synths, with `row(i)` for row geometry and hand-placed x. The OSC tab and the bottom half follow Serum 2 instead: knobs, value fields and cell lists (`segments`), placed by absolute coordinates (`OSC_W`; `MOD_W`, `GRAPH_H`, `KNOB_ROW`). The bottom half shows one envelope and one LFO at a time (`env_page`/`lfo_page`, switched by the `modtab:*` tabs whose round handles are the source chips), so tests that need the second page must click its tab. Single-frame factory tables (Sine…Pulse) show no 3D stack, so check the display with a multi-frame preset such as 13.
+Painted on a fixed 1400×905 canvas (`BW`/`BH`) through `Cv`, scaled to the window. `mod.rs`: state, header, tabs, popups, drag-and-drop; `widgets.rs`: `G` (param I/O, faders, steppers, selectors, value boxes, switches, buttons, chips); `graphs.rs`: envelope/filter graphs with handles, wave display, LFO, scope, spectrum; `tabs.rs`: the five tabs (rows 0–1) and the bottom half (rows 2–3). `row(i)`/`graph_rows(i)` give row geometry; x positions are hand-placed or `spread(x0, x1, n)` across a section. Text is never smaller than `MIN_FONT` (11 px): check new labels for collisions in a screenshot, `G::text_w` measures. Module on/off parameters are `G::power` LEDs at the left end of their section bar; module parameter blocks are addressed as `first.offset(o)`. Single-frame factory tables (Sine…Pulse) show no 3D stack on the OSC tab, so check the display with a multi-frame preset (`DOUBLE_SLIT_PRESET=13`).
 
 - Parameter values reach the plugin asynchronously. Read through `G::shown`/`plain` (pending values win until the host applies them) and write only through `send` inside `begin`/`end`, or `change`/`change_plain`. Faders track drags in egui temp memory; graph handles use `drag_offset` (offset from the press origin) because egui swallows the first ~6 px of a drag, so test drags on handles must be longer than that.
 - Modulation: every modulatable control calls `mod_target`, which records it as a drop target for source chips (`drag_and_drop`) and opens the popover on right-click. `mod_info` sums matrix rows per target each frame for the range overlays.
+- WT import/export dialogs run `zenity` off the GUI thread; user tables live in `$XDG_DATA_HOME/double-slit/tables`.
 - Popups are drawn last and shielded with a background interact so the click on an entry does not reach controls underneath.
-- Never hard-code colours; add a `Theme` field and fill it for all four themes (Tokyo Night default, Catppuccin, Dracula, Gruvbox — same set as the sibling synths). `Section` indexes bar/accent colours; `modulation` and `warning` are the matrix colours.
-- `src/editor_tests.rs` runs the real editor headless against a mock host that applies values late and checks gesture balance; every control registers its rect in `EditorState::controls` under its parameter ID (or a fixed key).
+- Never hard-code colours; add a `Theme` field (`theme.rs`) and fill it for all four themes (Tokyo Night default, Catppuccin, Dracula, Gruvbox — same set as the sibling synths). `Section` indexes bar/accent colours; `modulation` and `warning` are the matrix colours.
+- `src/editor_tests.rs` (compiled as `editor::tests` via `#[path]`) runs the real editor headless against a mock host that applies values late and checks gesture balance; every control registers its rect in `EditorState::controls` under its parameter ID (or a fixed key).
 
 ## Conventions
 

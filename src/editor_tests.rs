@@ -3,6 +3,7 @@
 //! nih-plug's CLAP wrapper does, and checks gesture balance.
 
 use super::*;
+use crate::dsp::common::MATRIX_SLOTS;
 use crate::dsp::mod_matrix::{mod_source_id, mod_target_index_for_param, ModSource};
 use crate::params::ExtraState;
 use nih_plug::wrapper::state::PluginState;
@@ -249,19 +250,14 @@ fn scale_of(c: &ControlInfo, canvas_width: f32) -> f32 {
     c.rect.width() / canvas_width
 }
 
-/// Every parameter is reachable from some tab and modulator page. Resonance
-/// is the vertical axis of the filter graph.
+/// Every parameter is reachable from some tab. Resonance is only the
+/// vertical axis of the filter graph.
 #[test]
 fn every_parameter_has_a_control() {
     let mut h = Harness::new(3);
     let mut seen: std::collections::HashSet<String> = Default::default();
     for tab in Tab::ALL {
         h.open_tab(tab);
-        seen.extend(h.state.controls.iter().map(|c| c.name.clone()));
-    }
-    for page in ["modtab:env:1", "modtab:lfo:1"] {
-        let c = h.control(page);
-        h.click(c.rect.center());
         seen.extend(h.state.controls.iter().map(|c| c.name.clone()));
     }
     let missing: Vec<&str> = crate::dsp::params::descs()
@@ -272,28 +268,25 @@ fn every_parameter_has_a_control() {
     assert_eq!(missing, ["filter.res"]);
 }
 
-/// Every fader, knob and value field on the OSC, FILTER and FX tabs and the
-/// bottom half follows a drag by the full distance, even though the host applies values late.
+/// Every fader on the OSC, FILTER and FX tabs and the bottom half follows a
+/// drag by the full distance, even though the host applies values late.
 #[test]
 fn faders_follow_drag_with_host_latency() {
-    use crate::editor::widgets::{FIELD_TRAVEL, KNOB_TRAVEL};
     let mut h = Harness::new(4);
     let mut checked = 0;
-    let kinds = [(ControlKind::Fader, 28.0, TRAVEL), (ControlKind::Knob, 0.0, KNOB_TRAVEL), (ControlKind::Field, 0.0, FIELD_TRAVEL)];
-    for (tab, (kind, width, travel)) in [Tab::Osc, Tab::Filter, Tab::Fx].into_iter().flat_map(|t| kinds.map(|k| (t, k))) {
+    for tab in [Tab::Osc, Tab::Filter, Tab::Fx] {
         if h.state.tab != tab {
             h.open_tab(tab);
         }
-        for c in h.controls(kind) {
+        for c in h.controls(ControlKind::Fader) {
             // The bottom half is drawn on every tab; test it once.
             if tab != Tab::Osc && c.rect.top() > BAR_Y[2] {
                 continue;
             }
-            // Knobs and fields come in several sizes; the harness canvas is unscaled.
-            let s = if width > 0.0 { scale_of(&c, width) } else { 1.0 };
+            let s = scale_of(&c, 28.0);
             let before = h.value(&c.name);
             let up = before < 0.5;
-            let px = 0.4 * travel * s;
+            let px = 0.4 * TRAVEL * s;
             h.drag(c.rect.center(), vec2(0.0, if up { -px } else { px }), 12);
             h.settle();
             let change = h.value(&c.name) - before;
@@ -302,12 +295,12 @@ fn faders_follow_drag_with_host_latency() {
                     let expected = if up { 0.4 } else { -0.4 };
                     assert!((change - expected).abs() < 0.08, "{}: moved {change:.3}, expected {expected:.3}", c.name);
                 }
-                _ => assert!(if up { change > 0.2 } else { change < -0.2 }, "{}: stepped control moved {change:.3}", c.name),
+                _ => assert!(if up { change > 0.2 } else { change < -0.2 }, "{}: stepped fader moved {change:.3}", c.name),
             }
             checked += 1;
         }
     }
-    assert!(checked > 60, "only {checked} controls");
+    assert!(checked > 40, "only {checked} faders");
     h.assert_clean();
 }
 
@@ -332,14 +325,47 @@ fn double_click_resets_and_scroll_changes() {
     h.assert_clean();
 }
 
+/// Value boxes (OSC pitch, sync ratio, FM, AM) follow a vertical drag over
+/// their travel, step with the wheel and reset on double-click.
+#[test]
+fn value_boxes_drag_scroll_and_reset() {
+    let mut h = Harness::new(3);
+    let boxes = h.controls(ControlKind::ValueBox);
+    let names: Vec<&str> = boxes.iter().map(|c| c.name.as_str()).collect();
+    for name in ["oscA.octave", "oscA.semi", "oscA.fine", "oscB.syncRatio", "oscB.fmIndex", "oscB.amIndex"] {
+        assert!(names.contains(&name), "{name} is not a value box: {names:?}");
+    }
+    for c in &boxes {
+        let before = h.value(&c.name);
+        let up = before < 0.5;
+        let px = 0.3 * widgets::BOX_TRAVEL * (c.rect.height() / 20.0);
+        h.drag(c.rect.center(), vec2(0.0, if up { -px } else { px }), 12);
+        h.settle();
+        let change = h.value(&c.name) - before;
+        assert!(if up { change > 0.2 } else { change < -0.2 }, "{}: moved {change:.3}", c.name);
+        h.double_click(c.rect.center());
+        h.settle();
+        assert!((h.value(&c.name) - before).abs() < 1e-4, "{} reset", c.name);
+    }
+    let c = h.control("oscA.semi");
+    h.move_to(c.rect.center());
+    h.run(1);
+    h.events.push(Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, 60.0),
+        modifiers: Modifiers::default(),
+    });
+    h.run(1);
+    h.settle();
+    assert!(h.plain("oscA.semi") >= 1.0, "{}", h.plain("oscA.semi"));
+    h.assert_clean();
+}
+
 /// Clicking the top and bottom detent of every stepped fader selects the end values.
 #[test]
 fn steppers_click_positions() {
     let mut h = Harness::new(3);
-    h.open_tab(Tab::Fx);
-    let steppers = h.controls(ControlKind::Stepper);
-    assert!(!steppers.is_empty());
-    for c in steppers {
+    for c in h.controls(ControlKind::Stepper) {
         let s = scale_of(&c, 54.0);
         h.click(pos2(c.rect.center().x, c.rect.top() + 16.0 * s));
         h.settle();
@@ -356,7 +382,7 @@ fn steppers_click_positions() {
 fn table_selector_steps_and_lists() {
     let mut h = Harness::new(2);
     let c = h.control("oscA.table");
-    let s = scale_of(&c, 290.0);
+    let s = scale_of(&c, 128.0);
     let before = h.plain("oscA.table");
     h.click(c.rect.right_center() - vec2(6.0 * s, 0.0));
     h.settle();
@@ -382,33 +408,21 @@ fn switches_toggle() {
     h.click(c.rect.center());
     h.settle();
     assert_eq!(h.plain("oscB.on"), 0.0);
-    h.assert_clean();
-}
-
-/// The wave display scrubs the WT position (sideways or up), switches between
-/// 3D and 2D, and its pencil opens the table in the WT editor.
-#[test]
-fn wave_display_scrubs_and_opens_the_editor() {
-    let mut h = Harness::new(3);
-    let wave = h.control("wave:1");
-    assert_eq!(wave.kind, ControlKind::Graph);
-    let w = wave.rect.width();
-    h.drag(wave.rect.center(), vec2(0.15 * w, -0.15 * w), 10);
-    h.settle();
-    assert!((h.value("oscB.wtPos") - 0.3).abs() < 0.03, "{}", h.value("oscB.wtPos"));
-
-    let view = h.control("wave-view:1");
-    h.click(view.rect.center());
-    assert!(h.state.wave_flat[1] && !h.state.wave_flat[0]);
-    h.click(view.rect.center());
-    assert!(!h.state.wave_flat[1]);
-    // The click on the button does not reach the display underneath.
-    assert!((h.value("oscB.wtPos") - 0.3).abs() < 0.03);
-
-    let edit = h.control("wave-edit:1");
-    h.click(edit.rect.center());
-    assert_eq!(h.state.tab, Tab::Wt);
-    assert_eq!(h.state.wt.slot, 1);
+    // Module power LEDs in the section bars.
+    for (tab, names) in [
+        (Tab::Filter, &["filter.on"][..]),
+        (Tab::Fx, &["fx.dist.on", "fx.chorus.on", "fx.delay.on", "fx.rev.on", "fx.delay.pingPong"][..]),
+    ] {
+        h.open_tab(tab);
+        for name in names {
+            let c = h.control(name);
+            assert_eq!(c.kind, ControlKind::Switch, "{name}");
+            let before = h.plain(name);
+            h.click(c.rect.center());
+            h.settle();
+            assert_eq!(h.plain(name), 1.0 - before, "{name}");
+        }
+    }
     h.assert_clean();
 }
 
@@ -419,8 +433,7 @@ fn envelope_handles_drag_times_and_sustain() {
     let attack = h.control("envAmp.attack");
     assert_eq!(attack.kind, ControlKind::Handle);
     let s = attack.rect.width() / 18.0;
-    // The graph is MOD_W - 16 wide and GRAPH_H high, with an 8 px margin.
-    let zone = 0.3 * (504.0 - 16.0 - 16.0) * s;
+    let zone = 0.3 * (tabs::ENV_W - 24.0 - 16.0) * s;
     let before = h.value("envAmp.attack");
     h.drag(attack.rect.center(), vec2(0.25 * zone, 0.0), 10);
     h.settle();
@@ -428,34 +441,11 @@ fn envelope_handles_drag_times_and_sustain() {
 
     let decay = h.control("envAmp.decay");
     let (d0, s0) = (h.value("envAmp.decay"), h.value("envAmp.sustain"));
-    let height = (236.0 - 16.0) * s;
+    let height = (tabs::ENV_GRAPH.1 - tabs::ENV_GRAPH.0 - 16.0) * s;
     h.drag(decay.rect.center(), vec2(0.2 * zone, 0.2 * height), 10);
     h.settle();
     assert!((h.value("envAmp.decay") - d0 - 0.2).abs() < 0.03);
     assert!((h.value("envAmp.sustain") - s0 + 0.2).abs() < 0.03);
-    h.assert_clean();
-}
-
-/// Modulator tabs switch the page; cells of a choice list select their value.
-#[test]
-fn modulator_tabs_and_choice_lists() {
-    let mut h = Harness::new(2);
-    assert!(h.try_control("lfo2.rate").is_none());
-    let tab = h.control("modtab:lfo:1");
-    h.click(tab.rect.center());
-    assert_eq!(h.state.lfo_page, 1);
-    assert!(h.try_control("lfo1.rate").is_none());
-    for (cell, param, value) in [("lfo2.shape#4", "lfo2.shape", 4.0), ("lfo2.retrig#2", "lfo2.retrig", 2.0), ("master.oversampling#2", "master.oversampling", 2.0)] {
-        let c = h.control(cell);
-        assert_eq!(c.kind, ControlKind::List);
-        h.click(c.rect.center());
-        h.settle();
-        assert_eq!(h.plain(param), value, "{cell}");
-    }
-    let tab = h.control("modtab:env:1");
-    h.click(tab.rect.center());
-    assert_eq!(h.state.env_page, 1);
-    assert!(h.try_control("envMod.attack").is_some());
     h.assert_clean();
 }
 
@@ -484,26 +474,63 @@ fn filter_graph_drags_cutoff_and_resonance() {
     h.assert_clean();
 }
 
-/// Dragging a source chip onto a fader adds a matrix row (+50 %), and the
-/// fader then shows a modulation range (SPEC 4.4).
+/// Dropping a source chip on a fader opens an amount scale with the drop
+/// point on +50 %; a click on the scale adds the row with the amount under
+/// the pointer, and the fader then shows a modulation range (SPEC 4.4).
 #[test]
 fn dropping_a_source_on_a_fader_adds_a_row() {
     let mut h = Harness::new(2);
     let chip = h.control(&format!("chip:{}", mod_source_id(ModSource::Lfo1.index())));
     let fader = h.control("oscA.wtPos");
     h.drag(chip.rect.center(), fader.rect.center() - chip.rect.center(), 12);
+    assert!(h.rows().is_empty(), "the drop alone must not add a row");
+    assert!(matches!(h.state.popup, Some(Popup::DropAmount { .. })));
+    assert!(h.state.drag_source.is_none());
+    let scale = h.control("drop:scale");
+    let plus_50 = scale.rect.left() + scale.rect.width() * 0.75;
+    assert!((plus_50 - fader.rect.center().x).abs() < 1.0, "drop point sits on +50 %");
+    h.click(pos2(plus_50, scale.rect.center().y));
+    assert!(h.state.popup.is_none());
     let rows = h.rows();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].source, ModSource::Lfo1.index());
     assert_eq!(rows[0].target, mod_target_index_for_param(ParamId::OscAWtPos));
-    assert!((rows[0].amount - 0.5).abs() < 1e-6);
-    assert!(h.state.drag_source.is_none());
+    assert!((rows[0].amount - 0.5).abs() < 0.02, "{}", rows[0].amount);
     let target = mod_target_index_for_param(ParamId::OscAWtPos).unwrap();
     assert!(h.state.mod_info[target].pos > 0.4);
-    // Dropping on the header (no control there) adds nothing.
-    let header = pos2(chip.rect.center().x, 30.0);
-    h.drag(chip.rect.center(), header - chip.rect.center(), 8);
-    assert_eq!(h.rows().len(), 1);
+
+    // The second click picks any amount on the scale.
+    h.drag(chip.rect.center(), fader.rect.center() - chip.rect.center(), 12);
+    let scale = h.control("drop:scale");
+    h.click(pos2(scale.rect.left() + scale.rect.width() * 0.25, scale.rect.center().y));
+    let rows = h.rows();
+    assert_eq!(rows.len(), 2);
+    assert!((rows[1].amount + 0.5).abs() < 0.02, "{}", rows[1].amount);
+
+    // A click outside the scale cancels; dropping on empty panel adds nothing.
+    h.drag(chip.rect.center(), fader.rect.center() - chip.rect.center(), 12);
+    h.click(pos2(2.0, BH - 2.0));
+    assert!(h.state.popup.is_none());
+    h.drag(chip.rect.center(), vec2(0.0, -200.0), 8);
+    assert!(h.state.popup.is_none());
+    assert_eq!(h.rows().len(), 2);
+    h.assert_clean();
+}
+
+/// Osc pitch is modulatable: octave and semi take dropped sources too.
+#[test]
+fn oscillator_pitch_takes_modulation() {
+    let mut h = Harness::new(2);
+    let chip = h.control(&format!("chip:{}", mod_source_id(ModSource::EnvMod.index())));
+    for name in ["oscA.octave", "oscB.semi"] {
+        let control = h.control(name);
+        h.drag(chip.rect.center(), control.rect.center() - chip.rect.center(), 12);
+        let scale = h.control("drop:scale");
+        h.click(pos2(scale.rect.right() - 1.0, scale.rect.center().y));
+        let last = h.rows().last().cloned().unwrap();
+        assert_eq!(last.target, mod_target_index_for_param(Harness::id(name)), "{name}");
+        assert!(last.amount > 0.95);
+    }
     h.assert_clean();
 }
 
@@ -523,6 +550,41 @@ fn right_click_popover_adds_and_removes_rows() {
     let remove = h.control("pop-remove:0");
     h.click(remove.rect.center());
     assert!(h.rows().is_empty());
+}
+
+/// Empty matrix slots open a two-step picker: source, then target; the row
+/// lands at +50 %. Clicking outside the picker adds nothing.
+#[test]
+fn empty_matrix_slot_adds_a_row() {
+    let mut h = Harness::new(2);
+    h.open_tab(Tab::Matrix);
+    assert!(h.try_control(&format!("slot:{}", MATRIX_SLOTS - 1)).is_some());
+    let slot = h.control("slot:0");
+    h.click(slot.rect.center());
+    assert!(matches!(h.state.popup, Some(Popup::NewRow { source: None, .. })));
+    let k = palette_sources(h.state.cc_pick).iter().position(|s| *s == ModSource::Lfo2.index()).unwrap();
+    let src = h.control(&format!("newsrc:{k}"));
+    h.click(src.rect.center());
+    h.run(1);
+    assert!(matches!(h.state.popup, Some(Popup::NewRow { source: Some(_), .. })));
+    assert!(h.rows().is_empty());
+    let t = mod_target_index_for_param(ParamId::FilterCutoff).unwrap();
+    let tgt = h.control(&format!("newtgt:{t}"));
+    h.click(tgt.rect.center());
+    assert!(h.state.popup.is_none());
+    let rows = h.rows();
+    assert_eq!(rows.len(), 1);
+    assert_eq!((rows[0].source, rows[0].target), (ModSource::Lfo2.index(), Some(t)));
+    assert!((rows[0].amount - 0.5).abs() < 1e-6);
+    // The used slot is a row now; the next one is the first empty slot.
+    h.run(1);
+    assert!(h.try_control("slot:0").is_none());
+    let slot = h.control("slot:1");
+    h.click(slot.rect.center());
+    h.click(pos2(2.0, BH - 2.0));
+    assert!(h.state.popup.is_none());
+    assert_eq!(h.rows().len(), 1);
+    h.assert_clean();
 }
 
 /// The MATRIX tab edits rows: amount, curve, mute, source, delete.

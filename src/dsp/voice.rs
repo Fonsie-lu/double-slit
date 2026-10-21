@@ -798,7 +798,11 @@ impl Voice {
         let glide_moving = (self.glide_target - self.glide_pitch).abs() > 1.0e-4;
         let pitch_dynamic = glide_moving
             || self.expr.vibrato > 0.0
+            || is_dynamic(OscAOctave)
+            || is_dynamic(OscASemi)
             || is_dynamic(OscAFine)
+            || is_dynamic(OscBOctave)
+            || is_dynamic(OscBSemi)
             || is_dynamic(OscBFine)
             || is_dynamic(OscCPitch)
             || is_dynamic(MasterTune);
@@ -812,12 +816,13 @@ impl Voice {
 
         // Increments follow pitch per sample; the mip level is picked once per
         // block (a 32-sample step is far below any audible band-limit change).
-        let octave_a = p[OscAOctave.index()] * 12.0 + p[OscASemi.index()];
-        let octave_b = p[OscBOctave.index()] * 12.0 + p[OscBSemi.index()];
+        // Octave and semi are stepped in the host but modulate continuously.
         let inv_sample_rate = 1.0 / self.sample_rate;
 
         let update_pitch = |v: &Self, vibrato: f32, a: &mut OscInput, b: &mut OscInput, sub_inc: &mut f32| {
             let common = v.glide_pitch + bend + v.modulated(p, MasterTune) * 0.01 + v.expr.tuning + vibrato;
+            let octave_a = v.modulated(p, OscAOctave) * 12.0 + v.modulated(p, OscASemi);
+            let octave_b = v.modulated(p, OscBOctave) * 12.0 + v.modulated(p, OscBSemi);
             a.increment = midi_to_hz_fast(common + octave_a + v.modulated(p, OscAFine) * 0.01) * inv_sample_rate;
             b.increment = midi_to_hz_fast(common + octave_b + v.modulated(p, OscBFine) * 0.01) * inv_sample_rate;
             *sub_inc = midi_to_hz_fast(common + v.modulated(p, OscCPitch)) * inv_sample_rate;

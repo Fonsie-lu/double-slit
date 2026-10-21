@@ -53,6 +53,11 @@ pub(crate) fn row(i: usize) -> (f32, (f32, f32)) {
     (bar + 46.0, (bar + 66.0, bar + 66.0 + TRAVEL))
 }
 
+/// Top and bottom of a graph with a one-line caption above it.
+pub(crate) fn graph_rows(i: usize) -> (f32, f32) {
+    (BAR_Y[i] + 56.0, BAR_Y[i] + 186.0)
+}
+
 /// How long a value set by the GUI is shown before trusting the parameter again.
 pub(crate) const PENDING_TIMEOUT: f64 = 1.0;
 
@@ -115,6 +120,24 @@ pub enum Popup {
     Modulation { target: usize, at: Pos2 },
     RowSource { row: usize, at: Pos2 },
     RowTarget { row: usize, at: Pos2 },
+    /// New matrix row from an empty slot: pick a source, then a target.
+    NewRow { source: Option<usize>, at: Pos2 },
+    /// Amount scale after a source chip was dropped on a target; a click on
+    /// it adds the row, a click outside cancels (SPEC 4.4).
+    DropAmount { source: usize, target: usize, at: Pos2 },
+}
+
+/// Width of the drop amount scale (-100 … +100 %) in canvas pixels.
+const DROP_SCALE_W: f32 = 220.0;
+/// Scale position inside the drop popup, relative to its top left corner.
+const DROP_SCALE_X: f32 = 10.0;
+const DROP_SCALE_Y: f32 = 22.0;
+const DROP_SCALE_H: f32 = 14.0;
+
+/// Amount on the drop scale under canvas x, snapped to whole percent.
+fn drop_amount(at: Pos2, x: f32) -> f32 {
+    let mid = at.x + DROP_SCALE_X + DROP_SCALE_W * 0.5;
+    (((x - mid) / (DROP_SCALE_W * 0.5)).clamp(-1.0, 1.0) * 100.0).round() / 100.0
 }
 
 /// Matrix rows summed per target, refreshed every frame for the fader overlays.
@@ -132,14 +155,8 @@ pub type PreviewStore = Arc<Mutex<HashMap<ParamPtr, f32>>>;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ControlKind {
     Fader,
-    Knob,
-    /// Value box dragged vertically (octave, semitone, phase).
-    Field,
     Stepper,
     Selector,
-    /// Choice as a grid of cells; registered whole under the parameter ID and
-    /// per cell as `"<id>#<index>"`.
-    List,
     Switch,
     Button,
     Chip,
@@ -147,6 +164,8 @@ pub enum ControlKind {
     Handle,
     /// Two-parameter graph, registered under its horizontal parameter.
     Graph,
+    /// Numeric field dragged vertically (`G::value_box`).
+    ValueBox,
 }
 
 /// Screen rectangle of an interactive control, recorded every frame (tests).
@@ -177,11 +196,6 @@ pub struct EditorState {
     /// CC number offered by the MATRIX palette's CC chip.
     pub(crate) cc_pick: u8,
     pub(crate) wt: tabs::WtState,
-    /// OSC tab wave displays showing only the current frame instead of the 3D stack.
-    pub(crate) wave_flat: [bool; 2],
-    /// Envelope (0 = amp, 1 = mod) and LFO shown in the bottom half.
-    pub env_page: usize,
-    pub lfo_page: usize,
     /// Matrix row being dragged to a new position: (row, current slot).
     pub(crate) row_drag: Option<(usize, usize)>,
     scratch: graphs::Scratch,
@@ -204,9 +218,6 @@ impl EditorState {
             preset: None,
             cc_pick: 74,
             wt: tabs::WtState::default(),
-            wave_flat: [false; 2],
-            env_page: 0,
-            lfo_page: 0,
             row_drag: None,
             scratch: graphs::Scratch::default(),
         }
@@ -474,12 +485,12 @@ impl G<'_, '_> {
     fn theme_selector(&mut self) {
         let cv = self.cv;
         let current = self.p.theme.load(Relaxed) as usize;
-        let chip_w = |name: &str| 14.0 + name.len() as f32 * 5.6;
-        let total: f32 = THEMES.iter().map(|t| chip_w(t.name) + 5.0).sum::<f32>() - 5.0;
+        let widths: Vec<f32> = THEMES.iter().map(|t| 14.0 + self.text_w(t.name, 8.0)).collect();
+        let total: f32 = widths.iter().map(|w| w + 5.0).sum::<f32>() - 5.0;
         let mut x = BW - 12.0 - total;
         self.text(cv.p(x - 10.0, 22.0), Align2::RIGHT_CENTER, "THEME", 8.5, self.th.header);
         for (i, theme) in THEMES.iter().enumerate() {
-            let w = chip_w(theme.name);
+            let w = widths[i];
             let rect = cv.r(x, 15.0, w, 14.0);
             let key = format!("theme:{}", theme.name);
             let resp = self.ui.interact(rect, Id::new(&key), Sense::click());
@@ -541,8 +552,8 @@ impl G<'_, '_> {
         self.pt.text(cv.p(1378.0, 56.0), Align2::RIGHT_CENTER, &value, cv.mono(11.0), self.th.oled_ink);
     }
 
-    /// Finishes a source-chip drag: a drop on a modulatable control adds a
-    /// matrix row there with +50 % (SPEC 4.4).
+    /// Finishes a source-chip drag: a drop on a modulatable control opens the
+    /// amount scale with the pointer on +50 % (SPEC 4.4).
     fn drag_and_drop(&mut self) {
         let Some(source) = self.st.drag_source else {
             return;
@@ -560,10 +571,13 @@ impl G<'_, '_> {
         if released {
             self.st.drag_source = None;
             let target = pos.and_then(|p| self.st.drop_targets.iter().rev().find(|(r, _)| r.contains(p)).map(|(_, t)| *t));
-            if let Some(target) = target {
-                self.st
-                    .shared
-                    .edit_matrix(true, |m| m.add_row(source, Some(target), 0.5, ModCurve::Linear));
+            if let (Some(target), Some(pos)) = (target, pos) {
+                let p = self.cv.to_canvas(pos);
+                let at = pos2(
+                    p.x - DROP_SCALE_X - DROP_SCALE_W * 0.75,
+                    p.y - DROP_SCALE_Y - DROP_SCALE_H * 0.5,
+                );
+                self.st.popup = Some(Popup::DropAmount { source, target, at });
             }
         }
     }
@@ -577,9 +591,12 @@ impl G<'_, '_> {
                 let (w, row, _) = choice_metrics(param);
                 (at, w + 8.0, param.desc().choices.len().max(1) as f32 * row + 8.0)
             }
-            Popup::Modulation { at, .. } => (at, 230.0, 8.0 + 16.0 * (6.0 + NUM_FIXED_SOURCES as f32 / 2.0)),
+            Popup::Modulation { at, .. } => (at, 272.0, 8.0 + 16.0 * (6.0 + NUM_FIXED_SOURCES as f32 / 2.0)),
             Popup::RowSource { at, .. } => (at, 260.0, 8.0 + 16.0 * ((NUM_FIXED_SOURCES as f32 + 4.0) / 2.0).ceil()),
             Popup::RowTarget { at, .. } => (at, 420.0, 8.0 + 16.0 * (num_mod_targets() as f32 / 2.0).ceil()),
+            Popup::NewRow { source: None, at } => (at, 260.0, 8.0 + 16.0 * ((NUM_FIXED_SOURCES as f32 + 4.0) / 2.0).ceil()),
+            Popup::NewRow { source: Some(_), at } => (at, 420.0, 24.0 + 16.0 * (num_mod_targets() as f32 / 2.0).ceil()),
+            Popup::DropAmount { at, .. } => (at, DROP_SCALE_W + 2.0 * DROP_SCALE_X, DROP_SCALE_Y + DROP_SCALE_H + 10.0),
         };
         let x = at.x.min(BW - w - 4.0);
         let y = at.y.min(BH - h - 4.0);
@@ -630,6 +647,27 @@ impl G<'_, '_> {
                     let at = origin + vec2((k % 2) as f32 * 126.0, (k / 2) as f32 * 16.0);
                     if self.popup_item(&format!("rowsrc:{k}"), at, 122.0, &mod_source_display_name(*src).to_uppercase(), false) {
                         self.st.shared.edit_matrix(true, |m| m.set_source(row, *src));
+                        close = true;
+                    }
+                }
+            }
+            Popup::DropAmount { source, target, .. } => close = self.drop_amount_scale(source, target, rect),
+            Popup::NewRow { source: None, at } => {
+                for (k, src) in palette_sources(self.st.cc_pick).iter().enumerate() {
+                    let item = origin + vec2((k % 2) as f32 * 126.0, (k / 2) as f32 * 16.0);
+                    if self.popup_item(&format!("newsrc:{k}"), item, 122.0, &mod_source_display_name(*src).to_uppercase(), false) {
+                        self.st.popup = Some(Popup::NewRow { source: Some(*src), at });
+                    }
+                }
+            }
+            Popup::NewRow { source: Some(src), .. } => {
+                let title = format!("{} >  PICK A TARGET", mod_source_display_name(src).to_uppercase());
+                self.pt
+                    .text(cv.p(origin.x + 4.0, origin.y + 6.0), Align2::LEFT_CENTER, &title, cv.mono(8.5), self.th.oled_dim);
+                for t in 0..num_mod_targets() {
+                    let item = origin + vec2((t % 2) as f32 * 206.0, 16.0 + (t / 2) as f32 * 16.0);
+                    if self.popup_item(&format!("newtgt:{t}"), item, 202.0, &mod_target_display_name(t).to_uppercase(), false) {
+                        self.st.shared.edit_matrix(true, |m| m.add_row(src, Some(t), 0.5, ModCurve::Linear));
                         close = true;
                     }
                 }
@@ -693,8 +731,8 @@ impl G<'_, '_> {
                 cv.mono(8.5),
                 self.th.text,
             );
-            self.amount_bar(&format!("pop-amount:{i}"), *i, row.amount, origin.x + 96.0, y + 1.0, 96.0);
-            if self.popup_item(&format!("pop-remove:{i}"), pos2(origin.x + 200.0, y), 18.0, "X", false) {
+            self.amount_bar(&format!("pop-amount:{i}"), *i, row.amount, origin.x + 128.0, y + 1.0, 104.0);
+            if self.popup_item(&format!("pop-remove:{i}"), pos2(origin.x + 242.0, y), 18.0, "X", false) {
                 self.st.shared.edit_matrix(true, |m| m.remove_row(*i));
             }
             y += 16.0;
@@ -706,8 +744,8 @@ impl G<'_, '_> {
         let mut close = false;
         for src in 1..NUM_FIXED_SOURCES {
             let k = src - 1;
-            let at = pos2(origin.x + (k % 2) as f32 * 112.0, y + (k / 2) as f32 * 16.0);
-            if self.popup_item(&format!("pop-add:{src}"), at, 108.0, &mod_source_display_name(src).to_uppercase(), false) {
+            let at = pos2(origin.x + (k % 2) as f32 * 132.0, y + (k / 2) as f32 * 16.0);
+            if self.popup_item(&format!("pop-add:{src}"), at, 128.0, &mod_source_display_name(src).to_uppercase(), false) {
                 self.st
                     .shared
                     .edit_matrix(true, |m| m.add_row(src, Some(target), 0.5, ModCurve::Linear));
@@ -715,6 +753,53 @@ impl G<'_, '_> {
             }
         }
         close
+    }
+
+    /// Second step of a chip drop: the pointer picks the amount on a bipolar
+    /// scale, a primary click adds the row. Returns true once it was added.
+    fn drop_amount_scale(&mut self, source: usize, target: usize, rect: Rect) -> bool {
+        let cv = self.cv;
+        // The clamped popup position, so the scale sits where it is drawn.
+        let at = cv.to_canvas(rect.min);
+        let (pointer, pressed) = self.ui.input(|i| (i.pointer.hover_pos(), i.pointer.primary_pressed()));
+        let amount = pointer.map_or(0.5, |p| drop_amount(at, cv.to_canvas(p).x));
+
+        let title = format!(
+            "{} > {}",
+            mod_source_display_name(source).to_uppercase(),
+            mod_target_display_name(target).to_uppercase()
+        );
+        self.pt.text(cv.p(at.x + DROP_SCALE_X, at.y + 10.0), Align2::LEFT_CENTER, &title, cv.mono(9.5), self.th.oled_dim);
+        let value = format!("{:+.0}%", amount * 100.0);
+        self.pt.text(
+            cv.p(at.x + DROP_SCALE_X + DROP_SCALE_W, at.y + 10.0),
+            Align2::RIGHT_CENTER,
+            &value,
+            cv.mono(9.5),
+            self.th.oled_ink,
+        );
+
+        let bar = cv.r(at.x + DROP_SCALE_X, at.y + DROP_SCALE_Y, DROP_SCALE_W, DROP_SCALE_H);
+        self.register("drop:scale", ControlKind::Fader, bar);
+        self.bipolar_fill(bar, amount);
+        let end = bar.center().x + amount * bar.width() * 0.5;
+        for k in 0..=4 {
+            let x = bar.left() + bar.width() * k as f32 * 0.25;
+            let h = if k == 2 { 0.0 } else { 0.35 };
+            self.pt.line_segment(
+                [pos2(x, bar.top() + bar.height() * h), pos2(x, bar.bottom())],
+                Stroke::new(1.0 * cv.s, self.th.scale),
+            );
+        }
+        self.pt.line_segment([pos2(end, bar.top() - 2.0 * cv.s), pos2(end, bar.bottom() + 2.0 * cv.s)], cv.stroke(2.0, self.th.oled_ink));
+
+        let clicked = pressed && pointer.is_some_and(|p| rect.contains(p));
+        if clicked {
+            self.st
+                .shared
+                .edit_matrix(true, |m| m.add_row(source, Some(target), amount, ModCurve::Linear));
+        }
+        clicked
     }
 
     /// Bipolar amount bar for a matrix row; drag horizontally, double-click resets to 0.
@@ -738,14 +823,8 @@ impl G<'_, '_> {
         if resp.hovered() {
             self.set_focus("MODULATION AMOUNT", format!("{:+.0}%", amount * 100.0), FocusKind::Plain);
         }
-        self.pt.rect_filled(rect, cv.round(2.0), self.th.slot);
+        self.bipolar_fill(rect, amount);
         let mid = rect.center().x;
-        let end = mid + amount * rect.width() * 0.5;
-        self.pt.rect_filled(
-            Rect::from_x_y_ranges(mid.min(end)..=mid.max(end), rect.y_range()),
-            cv.round(2.0),
-            self.th.modulation,
-        );
         self.pt
             .line_segment([pos2(mid, rect.top()), pos2(mid, rect.bottom())], Stroke::new(1.0 * cv.s, self.th.scale));
         self.pt.text(
@@ -758,8 +837,6 @@ impl G<'_, '_> {
     }
 }
 
-/// Sources offered in palettes and choosers: every fixed source, the four
-/// pre-mapped CC aliases (SPEC 4.1) and the currently picked CC.
 /// Item width, row pitch and font size of a choice list. The wavetable lists
 /// are as wide as their selector on the OSC tab and set larger.
 fn choice_metrics(param: ParamId) -> (f32, f32, f32) {
@@ -769,6 +846,8 @@ fn choice_metrics(param: ParamId) -> (f32, f32, f32) {
     }
 }
 
+/// Sources offered in palettes and choosers: every fixed source, the four
+/// pre-mapped CC aliases (SPEC 4.1) and the currently picked CC.
 pub(crate) fn palette_sources(cc_pick: u8) -> Vec<usize> {
     use crate::dsp::mod_matrix::cc_source_index;
     let mut v: Vec<usize> = (1..NUM_FIXED_SOURCES).collect();
