@@ -1,0 +1,18 @@
+# vst3-com from robbert-vdh/vst3-sys, branch fix/drop-box-from-raw (commit
+# b3ff4d7, the revision nih-plug pins), with one fix: the `vtable!` macro no
+# longer ends its expression in a semicolon, which rustc flags as
+# `semicolon_in_expressions_from_non_local_macros` (rust-lang/rust#79813) and
+# will reject in a future release. Wired in through `[patch]` in the root
+# Cargo.toml; drop both once upstream ships the fix.
+[package]
+name = "vst3-com"
+version = "0.1.0"
+authors = ["Microsoft Corp.", "Mike Hilgendorf"]
+description = """
+Fork of com-rs
+"""
+edition = "2018"
+license = "MIT"
+
+[dependencies]
+vst3-com-macros = { git = "https://github.com/robbert-vdh/vst3-sys.git", branch = "fix/drop-box-from-raw" }
