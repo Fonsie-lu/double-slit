@@ -633,10 +633,10 @@ impl G<'_, '_> {
                 let d = param.desc();
                 let current = self.plain(param).round() as usize;
                 let (w, row, font) = choice_metrics(param);
-                for (i, c) in d.choices.iter().enumerate() {
+                for (n, i) in widgets::choice_order(param).into_iter().enumerate() {
                     let key = format!("choice:{}:{i}", d.id_string);
-                    let at = origin + vec2(0.0, i as f32 * row);
-                    if self.popup_item_sized(&key, at, w, row - 1.0, &c.to_uppercase(), current == i, font) {
+                    let at = origin + vec2(0.0, n as f32 * row);
+                    if self.popup_item_sized(&key, at, w, row - 1.0, &d.choices[i].to_uppercase(), current == i, font) {
                         self.change_plain(param, i as f32);
                         close = true;
                     }

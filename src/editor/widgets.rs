@@ -11,7 +11,7 @@ use std::f32::consts::{PI, TAU};
 use super::theme::Theme;
 use super::{ControlInfo, ControlKind, EditorState, FocusKind, Pending, Popup, PENDING_TIMEOUT};
 use crate::dsp::mod_matrix::{mod_source_display_name, mod_target, mod_target_index_for_param, ModCurve};
-use crate::dsp::params::ParamId;
+use crate::dsp::params::{table_list_order, ParamId};
 use crate::params::DoubleSlitParams;
 
 /// Smallest text size in canvas pixels; smaller requests are raised to it so
@@ -506,6 +506,8 @@ impl G<'_, '_> {
         let resp = self.ui.interact(rect.shrink2(vec2(14.0 * cv.s, 0.0)), eid, Sense::click());
         self.register(&d.id_string, ControlKind::Selector, rect);
         let current = self.plain(id).round();
+        let order = choice_order(id);
+        let pos = order.iter().position(|&c| c as f32 == current).unwrap_or(0) as f32;
         let left = self.ui.interact(Rect::from_min_size(rect.min, vec2(14.0 * cv.s, rect.height())), eid.with("l"), Sense::click());
         let right = self.ui.interact(
             Rect::from_min_size(rect.right_top() - vec2(14.0 * cv.s, 0.0), vec2(14.0 * cv.s, rect.height())),
@@ -514,10 +516,10 @@ impl G<'_, '_> {
         );
         let mut next = None;
         if left.clicked() {
-            next = Some(current - 1.0);
+            next = Some(pos - 1.0);
         }
         if right.clicked() {
-            next = Some(current + 1.0);
+            next = Some(pos + 1.0);
         }
         if resp.clicked() {
             self.st.popup = Some(Popup::Choice { param: id, at: cv.to_canvas(rect.left_bottom()) });
@@ -526,12 +528,13 @@ impl G<'_, '_> {
         if hovered {
             let scroll = self.ui.input(|i| i.raw_scroll_delta.y);
             if scroll != 0.0 {
-                next = Some(current - scroll.signum());
+                next = Some(pos - scroll.signum());
             }
             self.focus_param(id, FocusKind::Plain);
         }
-        if let Some(v) = next {
-            self.change_plain(id, v.clamp(d.min, d.max));
+        if let Some(p) = next {
+            let p = p.clamp(0.0, order.len() as f32 - 1.0) as usize;
+            self.change_plain(id, order[p] as f32);
         }
         self.mod_target(id, rect, &resp);
 
@@ -691,4 +694,13 @@ pub fn fill_under(pt: &Painter, pts: &[Pos2], base: f32, color: Color32) {
         mesh.add_triangle(i, i + 2, i + 3);
     }
     pt.add(Shape::mesh(mesh));
+}
+
+/// Choice values in the order selectors step and lists show them: the
+/// wavetable lists put Custom last, every other choice is in value order.
+pub(crate) fn choice_order(id: ParamId) -> Vec<usize> {
+    match id {
+        ParamId::OscATable | ParamId::OscBTable => table_list_order().collect(),
+        _ => (0..id.desc().choices.len()).collect(),
+    }
 }

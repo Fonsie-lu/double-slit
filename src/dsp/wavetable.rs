@@ -12,9 +12,9 @@ use base64::engine::DecodePaddingMode;
 use base64::Engine as _;
 use serde_json::{json, Value};
 
-use crate::dsp::common::{hermite, lerp, FRAME_SIZE, MAX_FRAMES, MIP_LEVELS, PI, TWO_PI};
+use crate::dsp::common::{hermite, lerp, Rng, FRAME_SIZE, MAX_FRAMES, MIP_LEVELS, PI, TWO_PI};
 use crate::dsp::fft::Fft;
-use crate::dsp::params::{NUM_FACTORY_TABLES, NUM_TABLE_CHOICES, TABLE_NAMES};
+use crate::dsp::params::{factory_table_choice, NUM_TABLE_CHOICES, TABLE_NAMES};
 
 /// Names of the factory tables plus the trailing "Custom" choice.
 pub fn factory_table_choices() -> &'static [&'static str] {
@@ -107,6 +107,16 @@ fn dispersed_phase(h: i32, num_harmonics: i32) -> f32 {
 /// left Pulse 25 % and Analog PWM around 8 dB below the other tables.
 fn pulse_amp(h: i32, d: f32) -> f32 {
     (PI * h as f32 * d).sin() / h as f32
+}
+
+/// Harmonic `h` of a triangle: odd harmonics, 1/h², alternating sign.
+fn triangle_amp(h: i32) -> f32 {
+    if h % 2 == 1 {
+        let sign = if ((h - 1) / 2) % 2 == 0 { 1.0 } else { -1.0 };
+        sign / (h * h) as f32
+    } else {
+        0.0
+    }
 }
 
 fn pulse_phase(h: i32, d: f32) -> f32 {
@@ -427,9 +437,10 @@ impl Wavetable {
 
     // ---- Factory / file I/O ------------------------------------------------
 
-    /// Builds factory table `factory_index` (clamped to the factory range).
+    /// Builds the factory table of table choice `factory_index` (Custom and
+    /// out-of-range values clamp as in [`factory_table_choice`]).
     pub fn make_factory(factory_index: usize) -> Wavetable {
-        let index = factory_index.min(NUM_FACTORY_TABLES - 1);
+        let index = factory_table_choice(factory_index);
         let morph_frames = 16;
         let morph_t = |f: usize| f as f32 / (morph_frames - 1) as f32;
         let mut frames: Vec<Vec<f32>> = Vec::new();
@@ -438,18 +449,7 @@ impl Wavetable {
             // Sine
             0 => frames.push(harmonic_frame(1, |_| 1.0, None)),
             // Triangle
-            1 => frames.push(harmonic_frame(
-                256,
-                |h| {
-                    if h % 2 == 1 {
-                        let sign = if ((h - 1) / 2) % 2 == 0 { 1.0 } else { -1.0 };
-                        sign / (h * h) as f32
-                    } else {
-                        0.0
-                    }
-                },
-                None,
-            )),
+            1 => frames.push(harmonic_frame(256, triangle_amp, None)),
             // Saw
             2 => frames.push(harmonic_frame(512, |h| 1.0 / h as f32, None)),
             // Square
@@ -563,8 +563,8 @@ impl Wavetable {
                     }));
                 }
             }
-            // 13: Digi Vowel morph A-E-I-O-U
-            _ => {
+            // Digi Vowel: morph A-E-I-O-U
+            13 => {
                 for f in 0..17 {
                     let t = f as f32 / 16.0 * 4.0;
                     let v0 = (t as usize).min(4);
@@ -584,6 +584,118 @@ impl Wavetable {
                             (0.15 + lerp(a, b, mix_amt)) / h as f32
                         },
                         Some(&|h| dispersed_phase(h, 128)),
+                    ));
+                }
+            }
+            // 14 is Custom, which factory_table_choice never yields.
+            // Basic Shapes: sine -> triangle -> saw -> square, crossfaded
+            15 => {
+                let shapes = [
+                    harmonic_frame(1, |_| 1.0, None),
+                    harmonic_frame(256, triangle_amp, None),
+                    harmonic_frame(512, |h| 1.0 / h as f32, None),
+                    harmonic_frame(512, |h| if h % 2 == 1 { 1.0 / h as f32 } else { 0.0 }, None),
+                ];
+                for f in 0..morph_frames {
+                    let pos = morph_t(f) * 3.0;
+                    let seg = (pos as usize).min(2);
+                    let mix_amt = pos - seg as f32;
+                    let mut frame: Vec<f32> =
+                        shapes[seg].iter().zip(&shapes[seg + 1]).map(|(&a, &b)| lerp(a, b, mix_amt)).collect();
+                    normalise_frame(&mut frame);
+                    frames.push(frame);
+                }
+            }
+            // Analog Reso: saw through a resonant two-pole low-pass sweeping up
+            16 => {
+                const Q: f32 = 4.0;
+                for f in 0..morph_frames {
+                    let cutoff = 2.0 * 64.0_f32.powf(morph_t(f));
+                    let response = |h: i32| {
+                        let r = h as f32 / cutoff;
+                        (1.0 - r * r, r / Q)
+                    };
+                    frames.push(harmonic_frame(
+                        512,
+                        |h| {
+                            let (re, im) = response(h);
+                            1.0 / (h as f32 * (re * re + im * im).sqrt())
+                        },
+                        Some(&|h| {
+                            let (re, im) = response(h);
+                            -im.atan2(re)
+                        }),
+                    ));
+                }
+            }
+            // Analog Drive: sine into a slightly biased tanh stage, more drive per frame
+            17 => {
+                for f in 0..morph_frames {
+                    let t = morph_t(f);
+                    let drive = 16.0_f32.powf(t);
+                    let bias = 0.2 * t;
+                    frames.push(time_frame(|p| (drive * ((TWO_PI * p).sin() + bias)).tanh()));
+                }
+            }
+            // Digi Additive: a saw built up harmonic by harmonic
+            18 => {
+                const COUNTS: [i32; 16] = [1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 64, 128, 512];
+                for &count in &COUNTS {
+                    frames.push(harmonic_frame(count, |h| 1.0 / h as f32, None));
+                }
+            }
+            // Digi PD: Casio-style phase distortion, cosine towards a saw
+            19 => {
+                for f in 0..morph_frames {
+                    let knee = lerp(0.5, 0.02, morph_t(f));
+                    frames.push(time_frame(|p| {
+                        let warped = if p < knee { 0.5 * p / knee } else { 0.5 + 0.5 * (p - knee) / (1.0 - knee) };
+                        (TWO_PI * warped).cos()
+                    }));
+                }
+            }
+            // Digi FM: 1:1 two-operator FM, index rising to 8
+            20 => {
+                for f in 0..morph_frames {
+                    let t = morph_t(f);
+                    let index = 8.0 * t * t;
+                    frames.push(time_frame(|p| (TWO_PI * p + index * (TWO_PI * p).sin()).sin()));
+                }
+            }
+            // Digi Crush: sine with fewer levels and a coarser sample hold per frame
+            21 => {
+                for f in 0..morph_frames {
+                    let t = morph_t(f);
+                    let levels = 16.0 * 0.0625_f32.powf(t);
+                    let steps = (FRAME_SIZE >> (t * 6.0).round() as usize) as f32;
+                    frames.push(time_frame(|p| {
+                        let held = (p * steps).floor() / steps;
+                        ((TWO_PI * held).sin() * levels).round() / levels
+                    }));
+                }
+            }
+            // Digi Spectra: random spectra over a fixed fundamental, morphing
+            // between five seeded keyframes (the same table on every build)
+            _ => {
+                const KEYS: usize = 5;
+                const HARMONICS: usize = 128;
+                let mut rng = Rng::new(0x5EC7_2A11);
+                let phases: Vec<f32> = (0..HARMONICS).map(|_| rng.next_float() * TWO_PI).collect();
+                let keys: Vec<Vec<f32>> = (0..KEYS)
+                    .map(|_| {
+                        (1..=HARMONICS)
+                            .map(|h| if h == 1 { 1.0 } else { rng.next_float() * (h as f32).powf(-0.7) })
+                            .collect()
+                    })
+                    .collect();
+                for f in 0..morph_frames {
+                    let pos = morph_t(f) * (KEYS - 1) as f32;
+                    let k = (pos as usize).min(KEYS - 2);
+                    let mix_amt = pos - k as f32;
+                    frames.push(harmonic_frame(
+                        HARMONICS as i32,
+                        |h| lerp(keys[k][h as usize - 1], keys[k + 1][h as usize - 1], mix_amt),
+                        Some(&|h| phases[h as usize - 1]),
                     ));
                 }
             }
@@ -907,6 +1019,7 @@ fn push_u16(b: &mut Vec<u8>, v: u16) {
 mod tests {
     use super::*;
     use crate::dsp::common::midi_to_hz;
+    use crate::dsp::params::factory_tables;
 
     /// Energy above the mip level's harmonic limit, relative to total energy.
     fn alias_energy_ratio(table: &Wavetable, level: usize) -> f32 {
@@ -975,7 +1088,7 @@ mod tests {
         // stays within a few dB rather than the 18 dB the old normalisation produced.
         let mut quietest = 1.0e9_f32;
         let mut loudest = 0.0_f32;
-        for i in 0..NUM_FACTORY_TABLES {
+        for i in factory_tables() {
             let table = Wavetable::make_factory(i);
             assert!(table.num_frames() >= 1 && table.num_frames() <= MAX_FRAMES, "{i}");
             for f in 0..table.num_frames() {
@@ -1002,7 +1115,7 @@ mod tests {
     fn factory_tables_stay_audible_across_the_keyboard() {
         // Tables whose energy sits only in high harmonics used to fade to nothing
         // as the mip chain removed them - Digi Vowel lost 50 dB by the top of the range.
-        for i in 0..NUM_FACTORY_TABLES {
+        for i in factory_tables() {
             let table = Wavetable::make_factory(i);
             let top_mip = table.mip_for_increment(midi_to_hz(108.0) / 48000.0);
             let size = FRAME_SIZE >> top_mip;

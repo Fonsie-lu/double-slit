@@ -11,7 +11,7 @@ use serde_json::{json, Map, Value};
 use std::sync::Arc;
 
 use super::mod_matrix::{ModMatrix, ModRow};
-use super::params::{clamp_param, defaults, descs, ParamId, NUM_FACTORY_TABLES, NUM_PARAMS};
+use super::params::{clamp_param, defaults, descs, ParamId, NUM_PARAMS};
 use super::shared::SynthShared;
 use super::wavetable::Wavetable;
 
@@ -81,8 +81,7 @@ impl Default for PatchData {
 /// Factory table for an oscillator table-choice value; "Custom" and anything
 /// out of range clamp onto the factory list.
 fn factory_table(choice: f32) -> Arc<Wavetable> {
-    let index = (choice.max(0.0) as usize).min(NUM_FACTORY_TABLES - 1);
-    Arc::new(Wavetable::make_factory(index))
+    Arc::new(Wavetable::make_factory(choice as usize))
 }
 
 fn table_param(slot: usize) -> ParamId {
@@ -195,7 +194,7 @@ pub fn load_patch_data(json_text: &str) -> Option<PatchData> {
         let r = &refs[*name];
         let table = if r["factory"].is_number() {
             let index = r["factory"].as_f64().unwrap_or(0.0).max(0.0) as usize;
-            Some(Arc::new(Wavetable::make_factory(index.min(NUM_FACTORY_TABLES - 1))))
+            Some(Arc::new(Wavetable::make_factory(index)))
         } else if let Some(entry) = r.as_str().map(|key| &pool[key]).filter(|e| e.is_object()) {
             embedded(entry)
         } else if r.is_object() {

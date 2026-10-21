@@ -91,7 +91,7 @@ impl DoubleSlit {
             }
             self.requested_table[osc] = index;
             let loaded = self.shared.tables[osc].load().factory_index();
-            if index < CUSTOM_TABLE_CHOICE && loaded != Some(index) {
+            if index != CUSTOM_TABLE_CHOICE && loaded != Some(index) {
                 context.execute_background(Task::LoadFactoryTable { osc, index });
             }
         }
@@ -187,7 +187,7 @@ impl Plugin for DoubleSlit {
             let id = if osc == 0 { ParamId::OscATable } else { ParamId::OscBTable };
             let index = self.params.value(id).round() as usize;
             self.requested_table[osc] = index;
-            if index < CUSTOM_TABLE_CHOICE && self.shared.tables[osc].load().factory_index() != Some(index) {
+            if index != CUSTOM_TABLE_CHOICE && self.shared.tables[osc].load().factory_index() != Some(index) {
                 self.shared.set_table(osc, Arc::new(Wavetable::make_factory(index)));
             }
         }

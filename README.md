@@ -15,7 +15,7 @@ where the implementation differs from it.
 | Parameters   | 103, grouped by module, natural ranges in the host         |
 | GUI          | egui, 1400 × 905 design surface, freely resizable (corner) |
 
-- Two wavetable oscillators (14 factory tables plus a custom slot), unison 1-16
+- Two wavetable oscillators (22 factory tables plus a custom slot), unison 1-16
   with detune, spread and blend, hard sync, FM/AM from osc A, noise, and a
   sub / noise oscillator C
 - Per-voice multimode filter: TPT SVF (LP/HP 12/24, BP, notch, peak), ladder,
@@ -125,7 +125,7 @@ src/dsp/      engine: DSP + state, no nih-plug dependency
   filters     SVF multimode, ladder, comb, formant; fx: distortion, chorus, delay, reverb
   mod_matrix  16 rows, stable string IDs, lock-free snapshot for the audio thread
   shared      SynthShared: matrix, tables, LFO shapes, GUI feedback atomics
-  state       versioned JSON patches; presets: 23 factory patches
+  state       versioned JSON patches; presets: 48 factory patches
 src/params.rs host parameters generated from dsp/params.rs
 src/lib.rs    plugin: events, block loop, background table loading, state
 src/editor/   egui GUI: widgets, graphs, tabs, themes

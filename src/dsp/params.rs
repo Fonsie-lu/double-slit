@@ -288,10 +288,13 @@ pub const TIME_DIVS: &[&str] = &[
 ];
 pub const OVERSAMPLING: &[&str] = &["1x", "2x", "4x"];
 
-/// Built-in wavetables, plus one trailing "Custom" choice for edited tables.
-pub const NUM_FACTORY_TABLES: usize = 14;
-pub const NUM_TABLE_CHOICES: usize = NUM_FACTORY_TABLES + 1;
-pub const CUSTOM_TABLE_CHOICE: usize = NUM_FACTORY_TABLES;
+/// Built-in wavetables plus the "Custom" choice for edited tables. Custom
+/// stays at 14, where the original list ended, because projects and patches
+/// store the choice number; tables added later follow it. The editor lists
+/// Custom last ([`table_list_order`]).
+pub const CUSTOM_TABLE_CHOICE: usize = 14;
+pub const NUM_TABLE_CHOICES: usize = TABLE_NAMES.len();
+pub const NUM_FACTORY_TABLES: usize = NUM_TABLE_CHOICES - 1;
 pub const TABLE_NAMES: &[&str] = &[
     "Sine",
     "Triangle",
@@ -308,7 +311,37 @@ pub const TABLE_NAMES: &[&str] = &[
     "Digi Sync",
     "Digi Vowel",
     "Custom",
+    "Basic Shapes",
+    "Analog Reso",
+    "Analog Drive",
+    "Digi Additive",
+    "Digi PD",
+    "Digi FM",
+    "Digi Crush",
+    "Digi Spectra",
 ];
+
+/// The factory table a table-choice value names. Custom and anything out of
+/// range clamp onto the factory list, as they always have: Custom builds the
+/// table before it.
+pub fn factory_table_choice(choice: usize) -> usize {
+    let index = choice.min(NUM_TABLE_CHOICES - 1);
+    if index == CUSTOM_TABLE_CHOICE {
+        index - 1
+    } else {
+        index
+    }
+}
+
+/// Every factory table's choice value.
+pub fn factory_tables() -> impl Iterator<Item = usize> {
+    (0..NUM_TABLE_CHOICES).filter(|&i| i != CUSTOM_TABLE_CHOICE)
+}
+
+/// Table choices in the order the editor lists them: the factory tables, then Custom.
+pub fn table_list_order() -> impl Iterator<Item = usize> {
+    factory_tables().chain(std::iter::once(CUSTOM_TABLE_CHOICE))
+}
 
 // ---- Enum value orderings used by the DSP --------------------------------------
 
@@ -678,6 +711,22 @@ fn build() -> Vec<ParamDesc> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Projects and patches store the table choice as a number, so the
+    /// original tables and Custom never move.
+    #[test]
+    fn table_choices_keep_their_numbers() {
+        assert_eq!(TABLE_NAMES[2], "Saw");
+        assert_eq!(TABLE_NAMES[13], "Digi Vowel");
+        assert_eq!(TABLE_NAMES[CUSTOM_TABLE_CHOICE], "Custom");
+        assert_eq!(CUSTOM_TABLE_CHOICE, 14);
+        assert_eq!(factory_tables().count(), NUM_FACTORY_TABLES);
+        assert!(factory_tables().all(|i| factory_table_choice(i) == i));
+        assert_eq!(factory_table_choice(CUSTOM_TABLE_CHOICE), 13);
+        assert_eq!(factory_table_choice(999), NUM_TABLE_CHOICES - 1);
+        assert_eq!(table_list_order().last(), Some(CUSTOM_TABLE_CHOICE));
+        assert_eq!(table_list_order().count(), NUM_TABLE_CHOICES);
+    }
 
     #[test]
     fn table_matches_enum_and_ids_are_unique() {

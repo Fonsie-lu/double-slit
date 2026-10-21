@@ -40,8 +40,8 @@ Two layers with a hard boundary:
 ### Threading (SPEC 7)
 
 - Audio thread: `lib.rs::process` copies all host values into the engine (`Synth::set_params`) each block, splits the block at event times, and renders. Allocation-free: `tests/no_alloc.rs` proves it with nih-plug's aborting allocator (it only works in tests that link the crate).
-- `SynthShared` (`dsp/shared.rs`, one `Arc`): matrix row list behind a `Mutex` only the GUI/main thread takes, published into a lock-free double-buffered `SharedSnapshot` the audio thread copies once per block; tables and LFO shapes in `ArcSwap`, always replaced through `set_table`/`set_lfo_shape`, which park the old `Arc` so it is never freed on the audio thread; GUI feedback (`Feedback`) as relaxed atomics plus analyser rings.
-- Factory tables are built off the audio thread: `process` notices a changed TABLE parameter and queues `Task::LoadFactoryTable` on nih-plug's background executor; `initialize` builds them directly. Custom (index 14) keeps whatever the WT editor or a patch published.
+- `SynthShared` (`dsp/shared.rs`, one `Arc`): matrix row list behind a `Mutex` only the GUI/main thread takes, published into a lock-free double-buffered `SharedSnapshot` (`mod_matrix.rs`, seqlock per buffer) the audio thread copies once per block (copy, never hold a reference: back-to-back publishes reuse the buffer); tables and LFO shapes in `ArcSwap`, always replaced through `set_table`/`set_lfo_shape`, which park the old `Arc` so it is never freed on the audio thread; GUI feedback (`Feedback`) as relaxed atomics plus analyser rings.
+- Factory tables are built off the audio thread: `process` notices a changed TABLE parameter and queues `Task::LoadFactoryTable` on nih-plug's background executor; `initialize` builds them directly. Custom (choice 14) keeps whatever the WT editor or a patch published. It stays at 14 because projects and patches store the number: new factory tables are appended after it (`TABLE_NAMES`), and the editor lists and steps through Custom last (`table_list_order`, `choice_order`). Go through `factory_table_choice`/`factory_tables` rather than comparing against `CUSTOM_TABLE_CHOICE` or `NUM_FACTORY_TABLES`.
 - State: host parameters are saved by nih-plug; `serialize_fields` adds the editor size, theme and `"patch"` = `state::save_patch(shared, None, ..)` (the patch JSON without its params). Restoring applies it through `apply_patch_data`.
 
 ### Engine
@@ -65,3 +65,4 @@ Painted on a fixed 1400×905 canvas (`BW`/`BH`) through `Cv`, scaled to the wind
 - Randomness is seeded from the voice/engine (`Rng`), never the clock: repeat renders are bit-identical (tested).
 - The unison inner loop (`oscillator.rs`) is the hottest code; run the bench after touching it. The AVX2 path must match the scalar one (tested).
 - No vendor name or logo on the panel.
+- Compatibility keys never change: `CLAP_ID` (`ch.fonsie.double-slit`) and `VST3_CLASS_ID` in `lib.rs`, the parameter `id_string`s, and the patch JSON (opus-serum patches must keep loading; saved ones carry `"product": "double-slit"`).

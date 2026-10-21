@@ -353,6 +353,47 @@ fn table_selector_steps_and_lists() {
     h.assert_clean();
 }
 
+/// Custom keeps choice 14 for old projects, but the list and the arrows put it
+/// after the tables added later.
+#[test]
+fn table_selector_lists_custom_last() {
+    use crate::dsp::params::{CUSTOM_TABLE_CHOICE, NUM_TABLE_CHOICES};
+    let mut h = Harness::new(2);
+    let c = h.control("oscA.table");
+    let s = scale_of(&c, 290.0);
+    let right = c.rect.right_center() - vec2(6.0 * s, 0.0);
+    let pick = |h: &mut Harness, choice: usize| {
+        h.click(c.rect.center());
+        let item = h.control(&format!("choice:oscA.table:{choice}"));
+        h.click(item.rect.center());
+        h.settle();
+        assert_eq!(h.plain("oscA.table"), choice as f32);
+    };
+
+    h.click(c.rect.center());
+    let custom = h.control(&format!("choice:oscA.table:{CUSTOM_TABLE_CHOICE}"));
+    for i in 0..NUM_TABLE_CHOICES {
+        if i != CUSTOM_TABLE_CHOICE {
+            assert!(h.control(&format!("choice:oscA.table:{i}")).rect.top() < custom.rect.top(), "{i}");
+        }
+    }
+    h.click(c.rect.center());
+
+    pick(&mut h, CUSTOM_TABLE_CHOICE - 1);
+    h.click(right);
+    h.settle();
+    assert_eq!(h.plain("oscA.table"), (CUSTOM_TABLE_CHOICE + 1) as f32);
+
+    pick(&mut h, NUM_TABLE_CHOICES - 1);
+    h.click(right);
+    h.settle();
+    assert_eq!(h.plain("oscA.table"), CUSTOM_TABLE_CHOICE as f32);
+    h.click(right);
+    h.settle();
+    assert_eq!(h.plain("oscA.table"), CUSTOM_TABLE_CHOICE as f32);
+    h.assert_clean();
+}
+
 #[test]
 fn switches_toggle() {
     let mut h = Harness::new(2);

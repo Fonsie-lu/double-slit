@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use super::common::MATRIX_SLOTS;
 use super::mod_matrix::{mod_source_id, mod_target_id, mod_target_index_for_param, ModCurve, ModRow, ModSource, NUM_MOD_SOURCES};
-use super::params::{clamp_param, ParamId, NUM_FACTORY_TABLES};
+use super::params::{clamp_param, ParamId};
 use super::state::PatchData;
 use super::wavetable::Wavetable;
 
@@ -78,7 +78,8 @@ fn presets() -> Vec<Preset> {
             params: &[
                 (OscATable, 2.0), (FilterType, 7.0), (FilterCutoff, 500.0), (FilterRes, 0.7),
                 (FilterDrive, 0.4), (FilterEnvAmount, 0.6), (EnvModAttack, 0.001), (EnvModDecay, 0.25),
-                (EnvModSustain, 0.0), (EnvAmpDecay, 0.3), (EnvAmpSustain, 0.7), (MasterPolyphony, 8.0),
+                (EnvModSustain, 0.0), (EnvAmpDecay, 0.3), (EnvAmpSustain, 0.7), (MasterVolume, 1.5),
+                (MasterPolyphony, 8.0), (FxDistOn, 1.0), (FxDistDrive, 0.6), (FxDistMix, 0.6),
                 (FxDelayOn, 1.0), (FxDelayMix, 0.22),
             ],
             rows: vec![row(S::Velocity, FilterCutoff, 0.3)],
@@ -231,12 +232,334 @@ fn presets() -> Vec<Preset> {
             ],
             rows: vec![row(S::RandomNote, OscAWtPos, 0.6), row(S::RandomVoiceCycle, OscAPan, 0.5)],
         },
+        Preset {
+            name: "Shape Shifter Lead",
+            params: &[
+                (OscATable, 15.0), (OscAUniVoices, 3.0), (OscAUniDetune, 8.0), (OscBOn, 0.0),
+                (FilterType, 1.0), (FilterCutoff, 6000.0), (FilterRes, 0.25), (EnvAmpAttack, 0.005),
+                (EnvAmpRelease, 0.25), (MasterPolyphony, 8.0), (MasterGlide, 0.06), (Lfo1Rate, 5.5),
+                (FxDelayOn, 1.0), (FxDelayMix, 0.2),
+            ],
+            rows: vec![row(S::ModWheel, OscAWtPos, 1.0), row(S::Lfo1, OscAFine, 0.05)],
+        },
+        Preset {
+            name: "Reso Sweep Bass",
+            params: &[
+                (OscATable, 16.0), (OscBOn, 0.0), (OscCMode, 0.0), (OscCLevel, 0.5), (OscCPitch, -12.0),
+                (FilterType, 1.0), (FilterCutoff, 3500.0), (EnvModAttack, 0.0), (EnvModDecay, 0.3),
+                (EnvModSustain, 0.0), (EnvAmpDecay, 0.4), (EnvAmpSustain, 0.7), (EnvAmpRelease, 0.12),
+                (MasterPolyphony, 8.0),
+            ],
+            rows: vec![row(S::EnvMod, OscAWtPos, 0.8), row(S::Velocity, OscAWtPos, 0.2)],
+        },
+        Preset {
+            name: "Tube Drive Keys",
+            params: &[
+                (OscATable, 17.0), (OscAWtPos, 15.0), (OscBOn, 1.0), (OscBTable, 0.0), (OscBOctave, 1.0),
+                (OscBLevel, 0.25), (EnvAmpAttack, 0.002), (EnvAmpDecay, 1.4), (EnvAmpSustain, 0.3),
+                (EnvAmpRelease, 0.4), (FilterType, 0.0), (FilterCutoff, 8000.0), (FilterKeyTrack, 0.5),
+                (FxChorusOn, 1.0), (FxChorusMix, 0.35), (FxRevOn, 1.0), (FxRevMix, 0.18),
+            ],
+            rows: vec![row(S::Velocity, OscAWtPos, 0.7), row(S::EnvAmp, OscAWtPos, 0.25)],
+        },
+        Preset {
+            name: "Harmonic Rise Pad",
+            params: &[
+                (OscATable, 18.0), (OscAUniVoices, 5.0), (OscAUniDetune, 12.0), (OscAUniSpread, 0.8),
+                (OscBOn, 1.0), (OscBTable, 18.0), (OscBOctave, -1.0), (OscBLevel, 0.4), (EnvAmpAttack, 1.2),
+                (EnvAmpSustain, 1.0), (EnvAmpRelease, 2.0), (EnvModAttack, 3.0), (EnvModDecay, 2.0),
+                (EnvModSustain, 0.6), (FilterCutoff, 9000.0), (FxRevOn, 1.0), (FxRevSize, 0.8),
+                (FxRevMix, 0.4),
+            ],
+            rows: vec![row(S::EnvMod, OscAWtPos, 0.9), row(S::EnvMod, OscBWtPos, 0.6), row(S::ModWheel, FilterCutoff, -0.3)],
+        },
+        Preset {
+            name: "Phase Dist Pluck",
+            params: &[
+                (OscATable, 19.0), (OscBOn, 0.0), (EnvAmpAttack, 0.0), (EnvAmpDecay, 0.45),
+                (EnvAmpSustain, 0.0), (EnvAmpRelease, 0.3), (EnvModAttack, 0.0), (EnvModDecay, 0.2),
+                (EnvModSustain, 0.0), (FilterType, 0.0), (FilterCutoff, 5000.0), (FilterKeyTrack, 0.7),
+                (FxDelayOn, 1.0), (FxDelaySyncMode, 1.0), (FxDelaySyncDiv, 7.0), (FxDelayMix, 0.25),
+                (FxDelayPingPong, 1.0),
+            ],
+            rows: vec![row_curve(S::EnvMod, OscAWtPos, 0.9, ModCurve::Exp), row(S::Velocity, OscAWtPos, 0.1)],
+        },
+        Preset {
+            name: "FM Glass Piano",
+            params: &[
+                (OscATable, 20.0), (OscBOn, 1.0), (OscBTable, 0.0), (OscBOctave, 2.0), (OscBLevel, 0.15),
+                (EnvAmpAttack, 0.0), (EnvAmpDecay, 2.0), (EnvAmpSustain, 0.0), (EnvAmpRelease, 0.6),
+                (EnvModAttack, 0.0), (EnvModDecay, 0.6), (EnvModSustain, 0.1), (FilterCutoff, 14000.0),
+                (FxChorusOn, 1.0), (FxChorusMix, 0.25), (FxRevOn, 1.0), (FxRevMix, 0.3),
+            ],
+            rows: vec![row(S::EnvMod, OscAWtPos, 0.55), row(S::Velocity, OscAWtPos, 0.35)],
+        },
+        Preset {
+            name: "Crushed Chip Lead",
+            params: &[
+                (OscATable, 21.0), (OscAWtPos, 45.0), (OscBOn, 1.0), (OscBTable, 21.0), (OscBWtPos, 80.0),
+                (OscBOctave, -1.0), (OscBLevel, 0.4), (EnvAmpAttack, 0.0), (EnvAmpSustain, 0.8),
+                (EnvAmpRelease, 0.1), (Lfo1SyncMode, 1.0), (Lfo1SyncDiv, 4.0), (Lfo1Shape, 4.0),
+                (MasterPolyphony, 8.0), (MasterGlide, 0.03), (FxDelayOn, 1.0), (FxDelaySyncMode, 1.0),
+                (FxDelaySyncDiv, 3.0), (FxDelayMix, 0.3), (FxDelayPingPong, 1.0),
+            ],
+            rows: vec![row_curve(S::Lfo1, OscAWtPos, 0.3, ModCurve::Switch), row(S::ModWheel, OscAWtPos, 0.5)],
+        },
+        Preset {
+            name: "Spectral Drift",
+            params: &[
+                (OscATable, 22.0), (OscAUniVoices, 4.0), (OscAUniDetune, 10.0), (OscAUniSpread, 1.0),
+                (OscBOn, 1.0), (OscBTable, 22.0), (OscBWtPos, 60.0), (OscBSemi, 7.0), (OscBLevel, 0.45),
+                (OscBPan, 0.3), (EnvAmpAttack, 1.8), (EnvAmpSustain, 1.0), (EnvAmpRelease, 3.0),
+                (Lfo1Rate, 0.07), (Lfo2Rate, 0.11), (FilterCutoff, 7000.0), (FxRevOn, 1.0),
+                (FxRevSize, 0.95), (FxRevMix, 0.5), (FxRevPreDelay, 30.0),
+            ],
+            rows: vec![row(S::Lfo1, OscAWtPos, 0.8), row(S::Lfo2, OscBWtPos, -0.8), row(S::Lfo2, OscAPan, 0.4)],
+        },
+        // Drums are tuned for middle C: the pitch tracks the key like any patch.
+        Preset {
+            name: "808 Kick",
+            params: &[
+                (OscATable, 0.0), (OscAOctave, -2.0), (OscASemi, -3.0), (OscAPhaseMode, 2.0), (OscBOn, 0.0),
+                (FilterOn, 0.0), (EnvAmpAttack, 0.0), (EnvAmpDecay, 0.9), (EnvAmpSustain, 0.0),
+                (EnvAmpRelease, 0.9), (EnvAmpDecayCurve, 0.4), (EnvAmpReleaseCurve, 0.4), (EnvModAttack, 0.0),
+                (EnvModDecay, 0.12), (EnvModSustain, 0.0), (EnvModRelease, 0.12), (EnvModDecayCurve, 0.8),
+                (EnvModReleaseCurve, 0.8), (FxDistOn, 1.0), (FxDistDrive, 0.15), (FxDistMix, 0.5),
+            ],
+            rows: vec![row(S::EnvMod, OscAOctave, 0.35), row(S::Velocity, FxDistDrive, 0.2)],
+        },
+        Preset {
+            name: "808 Snare",
+            params: &[
+                (OscATable, 0.0), (OscAOctave, -1.0), (OscASemi, 5.0), (OscALevel, 0.0), (OscAPhaseMode, 2.0),
+                (OscBOn, 1.0), (OscBTable, 0.0), (OscBSemi, 4.0), (OscBLevel, 0.0), (OscBPhaseMode, 2.0),
+                (OscCMode, 2.0), (OscCLevel, 0.6), (FilterType, 2.0), (FilterCutoff, 160.0), (FilterRes, 0.0),
+                (EnvAmpAttack, 0.0), (EnvAmpDecay, 0.28), (EnvAmpSustain, 0.0), (EnvAmpRelease, 0.28),
+                (EnvAmpDecayCurve, 0.5), (EnvAmpReleaseCurve, 0.5), (EnvModAttack, 0.0), (EnvModDecay, 0.11),
+                (EnvModSustain, 0.0), (EnvModRelease, 0.11), (EnvModDecayCurve, 0.5),
+            ],
+            rows: vec![
+                row(S::EnvMod, OscALevel, 0.9), row(S::EnvMod, OscBLevel, 0.5), row(S::EnvMod, OscAOctave, 0.04),
+                row(S::Velocity, OscCLevel, 0.3),
+            ],
+        },
+        Preset {
+            name: "808 Clap",
+            // One short noise burst; the 11 ms delay turns it into the flurry
+            // of hits and the small room adds the tail.
+            params: &[
+                (OscAOn, 0.0), (OscBOn, 0.0), (OscCMode, 2.0), (OscCLevel, 1.0), (FilterType, 2.0),
+                (FilterCutoff, 800.0), (FilterRes, 0.25), (EnvAmpAttack, 0.0), (EnvAmpDecay, 0.012),
+                (EnvAmpSustain, 0.0), (EnvAmpRelease, 0.012), (MasterVolume, 1.5), (FxDistOn, 1.0),
+                (FxDistDrive, 0.5), (FxDelayOn, 1.0), (FxDelaySyncMode, 0.0), (FxDelayTimeMs, 11.0), (FxDelayFeedback, 0.55),
+                (FxDelayTone, 0.6), (FxDelayMix, 0.5), (FxRevOn, 1.0), (FxRevSize, 0.35), (FxRevDamp, 0.6),
+                (FxRevMix, 0.45),
+            ],
+            rows: vec![row(S::Velocity, FilterCutoff, 0.15), row(S::RandomNote, FilterCutoff, 0.05)],
+        },
+        Preset {
+            name: "808 Tom",
+            params: &[
+                (OscATable, 0.0), (OscAOctave, -1.0), (OscAPhaseMode, 2.0), (OscBOn, 0.0), (OscCMode, 3.0),
+                (OscCLevel, 0.05), (FilterType, 0.0), (FilterCutoff, 3000.0), (FilterRes, 0.0),
+                (EnvAmpAttack, 0.0), (EnvAmpDecay, 0.55), (EnvAmpSustain, 0.0), (EnvAmpRelease, 0.55),
+                (EnvAmpDecayCurve, 0.4), (EnvAmpReleaseCurve, 0.4), (EnvModAttack, 0.0), (EnvModDecay, 0.25),
+                (EnvModSustain, 0.0), (EnvModRelease, 0.25), (EnvModDecayCurve, 0.6),
+            ],
+            rows: vec![row(S::EnvMod, OscAOctave, 0.1), row(S::Velocity, OscAOctave, 0.02)],
+        },
+        Preset {
+            name: "303 Bass",
+            params: &[
+                (OscATable, 2.0), (OscAOctave, -1.0), (OscBOn, 0.0), (FilterType, 7.0), (FilterCutoff, 500.0),
+                (FilterRes, 0.82), (FilterDrive, 0.35), (FilterEnvAmount, 0.55), (FilterKeyTrack, 0.3),
+                (EnvModAttack, 0.0), (EnvModDecay, 0.22), (EnvModSustain, 0.0), (EnvModDecayCurve, 0.4),
+                (EnvAmpAttack, 0.002), (EnvAmpDecay, 0.6), (EnvAmpSustain, 0.6), (EnvAmpRelease, 0.04),
+                (MasterVolume, 1.4), (MasterPolyphony, 8.0), (MasterGlide, 0.07), (FxDistOn, 1.0),
+                (FxDistDrive, 0.6), (FxDistMix, 0.6),
+            ],
+            rows: vec![
+                row(S::Velocity, FilterCutoff, 0.25), row(S::Velocity, FilterRes, 0.1),
+                row(S::ModWheel, FilterCutoff, 0.5),
+            ],
+        },
+        Preset {
+            name: "Hypersaw",
+            params: &[
+                (OscATable, 5.0), (OscAUniVoices, 16.0), (OscAUniDetune, 45.0), (OscAUniSpread, 1.0),
+                (OscAUniBlend, 0.9), (OscAPhaseMode, 1.0), (OscBOn, 1.0), (OscBTable, 2.0), (OscBOctave, -1.0),
+                (OscBUniVoices, 16.0), (OscBUniDetune, 38.0), (OscBUniSpread, 1.0), (OscBUniBlend, 0.9),
+                (OscBLevel, 0.5), (OscBPhaseMode, 1.0), (FilterType, 0.0), (FilterCutoff, 12000.0),
+                (EnvAmpAttack, 0.01), (EnvAmpSustain, 1.0), (EnvAmpRelease, 0.45), (FxChorusOn, 1.0),
+                (FxChorusMix, 0.3), (FxDelayOn, 1.0), (FxDelaySyncMode, 1.0), (FxDelaySyncDiv, 7.0),
+                (FxDelayMix, 0.18), (FxDelayPingPong, 1.0), (FxRevOn, 1.0), (FxRevSize, 0.8), (FxRevMix, 0.28),
+            ],
+            rows: vec![row(S::ModWheel, OscAUniDetune, 0.4), row(S::ModWheel, OscBUniDetune, 0.4)],
+        },
+        Preset {
+            name: "Growl Bass",
+            params: &[
+                (OscATable, 10.0), (OscAOctave, -1.0), (OscAUniVoices, 2.0), (OscAUniDetune, 8.0),
+                (OscBOn, 1.0), (OscBTable, 20.0), (OscBOctave, -1.0), (OscBLevel, 0.5), (OscCMode, 0.0),
+                (OscCLevel, 0.45), (OscCPitch, -12.0), (FilterType, 10.0), (FilterCutoff, 1200.0),
+                (FilterRes, 0.55), (FilterMix, 0.85), (EnvAmpAttack, 0.003), (EnvAmpSustain, 1.0),
+                (EnvAmpRelease, 0.12), (Lfo1SyncMode, 1.0), (Lfo1SyncDiv, 3.0), (Lfo1Retrig, 2.0),
+                (MasterPolyphony, 8.0), (FxDistOn, 1.0), (FxDistDrive, 0.6), (FxDistTone, 0.55),
+            ],
+            rows: vec![
+                row(S::Lfo1, OscAWtPos, 0.8), row(S::Lfo1, OscBWtPos, 0.6), row(S::Lfo1, FilterVowel, 0.9),
+                row(S::ModWheel, FxDistDrive, 0.3),
+            ],
+        },
+        Preset {
+            name: "Fog Horn",
+            // Both oscillators sit two semitones flat and the amp envelope
+            // bends them up to pitch: the horn groans in and sags out.
+            params: &[
+                (OscATable, 3.0), (OscAOctave, -2.0), (OscASemi, -2.0), (OscBOn, 1.0), (OscBTable, 2.0),
+                (OscBOctave, -2.0), (OscBSemi, -2.0), (OscBFine, 9.0), (OscBLevel, 0.6), (OscCMode, 0.0),
+                (OscCLevel, 0.3), (FilterType, 1.0), (FilterCutoff, 420.0), (FilterRes, 0.3),
+                (FilterEnvAmount, 0.25), (EnvModAttack, 0.5), (EnvModDecay, 1.0), (EnvModSustain, 0.6),
+                (EnvModRelease, 1.2), (EnvAmpAttack, 0.35), (EnvAmpSustain, 1.0), (EnvAmpRelease, 1.6),
+                (Lfo2Rate, 4.5), (MasterPolyphony, 8.0), (FxDistOn, 1.0), (FxDistDrive, 0.25),
+                (FxRevOn, 1.0), (FxRevSize, 0.95), (FxRevDamp, 0.7), (FxRevMix, 0.4),
+            ],
+            rows: vec![
+                row(S::EnvAmp, OscASemi, 0.08), row(S::EnvAmp, OscBSemi, 0.08), row(S::Lfo2, OscAFine, 0.01),
+            ],
+        },
+        // Acoustic instruments.
+        Preset {
+            name: "Acoustic Piano",
+            // A long decay with a steep curve drops fast after the hammer and
+            // then rings on; the filter closes as the note dies.
+            params: &[
+                (OscATable, 5.0), (OscAWtPos, 55.0), (OscAPhaseMode, 2.0), (OscBOn, 1.0), (OscBTable, 1.0),
+                (OscBOctave, 1.0), (OscBFine, 3.0), (OscBLevel, 0.35), (OscBPhaseMode, 2.0),
+                (FilterType, 0.0), (FilterCutoff, 1100.0), (FilterRes, 0.05), (FilterKeyTrack, 0.8),
+                (EnvModAttack, 0.0), (EnvModDecay, 1.8), (EnvModSustain, 0.0), (EnvModDecayCurve, 0.6),
+                (EnvAmpAttack, 0.001), (EnvAmpDecay, 6.0), (EnvAmpSustain, 0.0), (EnvAmpRelease, 0.35),
+                (EnvAmpDecayCurve, 0.75), (EnvAmpVelAmount, 0.8), (FxRevOn, 1.0), (FxRevSize, 0.55),
+                (FxRevMix, 0.18),
+            ],
+            rows: vec![row(S::EnvMod, FilterCutoff, 0.45), row(S::Velocity, FilterCutoff, 0.3)],
+        },
+        Preset {
+            name: "Electric Piano",
+            // The FM table's index decays with the mod envelope, as on a DX tine piano.
+            params: &[
+                (OscATable, 20.0), (OscAWtPos, 10.0), (OscAPhaseMode, 2.0), (OscBOn, 1.0), (OscBTable, 0.0),
+                (OscBLevel, 0.35), (OscBPhaseMode, 2.0), (FilterCutoff, 9000.0), (EnvModAttack, 0.0),
+                (EnvModDecay, 0.7), (EnvModSustain, 0.0), (EnvModDecayCurve, 0.5), (EnvAmpAttack, 0.001),
+                (EnvAmpDecay, 3.5), (EnvAmpSustain, 0.0), (EnvAmpRelease, 0.3), (EnvAmpDecayCurve, 0.5),
+                (EnvAmpVelAmount, 0.7), (Lfo1Rate, 4.0), (Lfo1Retrig, 0.0), (FxChorusOn, 1.0),
+                (FxChorusMix, 0.35), (FxRevOn, 1.0), (FxRevMix, 0.15),
+            ],
+            rows: vec![
+                row(S::EnvMod, OscAWtPos, 0.4), row(S::Velocity, OscAWtPos, 0.3), row(S::Lfo1, MasterPan, 0.25),
+            ],
+        },
+        Preset {
+            name: "Nylon Guitar",
+            params: &[
+                (OscATable, 5.0), (OscAWtPos, 40.0), (OscAPhaseMode, 2.0), (OscBOn, 0.0), (FilterType, 0.0),
+                (FilterCutoff, 1200.0), (FilterRes, 0.1), (FilterKeyTrack, 0.6), (FilterEnvAmount, 0.45),
+                (EnvModAttack, 0.0), (EnvModDecay, 0.25), (EnvModSustain, 0.0), (EnvModRelease, 0.25),
+                (EnvAmpAttack, 0.0), (EnvAmpDecay, 3.0), (EnvAmpSustain, 0.0), (EnvAmpRelease, 0.25),
+                (EnvAmpDecayCurve, 0.4), (EnvAmpVelAmount, 0.7), (FxChorusOn, 1.0), (FxChorusMix, 0.2),
+                (FxRevOn, 1.0), (FxRevSize, 0.45), (FxRevMix, 0.18),
+            ],
+            rows: vec![row(S::Velocity, FilterCutoff, 0.3)],
+        },
+        Preset {
+            name: "Steel Guitar",
+            // Plucked string: a short noise-and-saw burst excites a comb filter
+            // tuned to the note (key track 1, middle C at 261.6 Hz). The comb
+            // has no damping, so every overtone rings on: a bright steel string.
+            params: &[
+                (OscATable, 2.0), (OscALevel, 0.0), (OscAPhaseMode, 2.0), (OscBOn, 0.0), (OscCMode, 3.0),
+                (OscCLevel, 0.0), (FilterType, 8.0), (FilterCutoff, 261.63), (FilterRes, 1.0),
+                (FilterKeyTrack, 1.0), (EnvModAttack, 0.0), (EnvModDecay, 0.02), (EnvModSustain, 0.0),
+                (EnvModRelease, 0.02), (EnvAmpAttack, 0.0), (EnvAmpDecay, 3.0), (EnvAmpSustain, 0.0),
+                (EnvAmpRelease, 0.25), (EnvAmpDecayCurve, 0.4), (EnvAmpVelAmount, 0.7), (MasterVolume, 1.5),
+                (FxDistOn, 1.0), (FxDistDrive, 0.35), (FxDistTone, 0.4), (FxChorusOn, 1.0),
+                (FxChorusMix, 0.2), (FxRevOn, 1.0), (FxRevSize, 0.45), (FxRevMix, 0.18),
+            ],
+            rows: vec![
+                row(S::EnvMod, OscALevel, 1.0), row(S::EnvMod, OscCLevel, 0.8), row(S::Velocity, OscCLevel, 0.2),
+            ],
+        },
+        Preset {
+            name: "Concert Harp",
+            params: &[
+                (OscATable, 1.0), (OscAPhaseMode, 2.0), (OscBOn, 1.0), (OscBTable, 0.0), (OscBOctave, 1.0),
+                (OscBLevel, 0.25), (OscBPhaseMode, 2.0), (FilterType, 0.0), (FilterCutoff, 1800.0),
+                (FilterRes, 0.1), (FilterKeyTrack, 0.6), (EnvModAttack, 0.0), (EnvModDecay, 0.4),
+                (EnvModSustain, 0.0), (EnvAmpAttack, 0.003), (EnvAmpDecay, 3.0), (EnvAmpSustain, 0.0),
+                (EnvAmpRelease, 1.5), (EnvAmpDecayCurve, 0.5), (EnvAmpReleaseCurve, 0.5), (FxChorusOn, 1.0),
+                (FxChorusMix, 0.15), (FxRevOn, 1.0), (FxRevSize, 0.8), (FxRevMix, 0.35),
+            ],
+            rows: vec![row(S::EnvMod, FilterCutoff, 0.35), row(S::Velocity, FilterCutoff, 0.25)],
+        },
+        Preset {
+            name: "Xylophone",
+            // Sounds an octave above the key, like the real instrument; the bar's
+            // overtone at three times the pitch fades first, with a mallet tick.
+            params: &[
+                (OscATable, 0.0), (OscAOctave, 1.0), (OscAPhaseMode, 2.0), (OscBOn, 1.0), (OscBTable, 0.0),
+                (OscBOctave, 2.0), (OscBSemi, 7.0), (OscBLevel, 0.0), (OscBPhaseMode, 2.0), (OscCMode, 2.0),
+                (OscCLevel, 0.0), (FilterType, 0.0), (FilterCutoff, 9000.0), (EnvModAttack, 0.0),
+                (EnvModDecay, 0.08), (EnvModSustain, 0.0), (EnvModRelease, 0.08), (EnvAmpAttack, 0.0),
+                (EnvAmpDecay, 0.45), (EnvAmpSustain, 0.0), (EnvAmpRelease, 0.45), (EnvAmpDecayCurve, 0.5),
+                (EnvAmpReleaseCurve, 0.5), (EnvAmpVelAmount, 0.7), (FxRevOn, 1.0), (FxRevSize, 0.5),
+                (FxRevMix, 0.2),
+            ],
+            rows: vec![row(S::EnvMod, OscBLevel, 0.45), row(S::EnvMod, OscCLevel, 0.12)],
+        },
+        Preset {
+            name: "Marimba",
+            params: &[
+                (OscATable, 0.0), (OscAPhaseMode, 2.0), (OscBOn, 1.0), (OscBTable, 0.0), (OscBOctave, 2.0),
+                (OscBLevel, 0.0), (OscBPhaseMode, 2.0), (FilterType, 0.0), (FilterCutoff, 6000.0),
+                (EnvModAttack, 0.0), (EnvModDecay, 0.15), (EnvModSustain, 0.0), (EnvModRelease, 0.15),
+                (EnvAmpAttack, 0.002), (EnvAmpDecay, 1.1), (EnvAmpSustain, 0.0), (EnvAmpRelease, 1.1),
+                (EnvAmpDecayCurve, 0.5), (EnvAmpReleaseCurve, 0.5), (EnvAmpVelAmount, 0.7), (FxRevOn, 1.0),
+                (FxRevSize, 0.6), (FxRevMix, 0.22),
+            ],
+            rows: vec![row(S::EnvMod, OscBLevel, 0.35), row(S::Velocity, OscBLevel, 0.1)],
+        },
+        Preset {
+            name: "French Horn",
+            params: &[
+                (OscATable, 2.0), (OscAOctave, -1.0), (OscBOn, 1.0), (OscBTable, 2.0), (OscBOctave, -1.0),
+                (OscBFine, 6.0), (OscBLevel, 0.6), (FilterType, 1.0), (FilterCutoff, 650.0), (FilterRes, 0.1),
+                (FilterKeyTrack, 0.5), (FilterEnvAmount, 0.3), (EnvModAttack, 0.08), (EnvModDecay, 0.4),
+                (EnvModSustain, 0.5), (EnvModRelease, 0.25), (EnvAmpAttack, 0.06), (EnvAmpSustain, 0.9),
+                (EnvAmpRelease, 0.3), (MasterVolume, 0.6), (Lfo1Rate, 5.0), (FxRevOn, 1.0), (FxRevSize, 0.75), (FxRevMix, 0.3),
+            ],
+            rows: vec![
+                row(S::Velocity, FilterCutoff, 0.35), row(S::ModWheel, FilterCutoff, 0.4),
+                row(S::Lfo1, OscAFine, 0.006), row(S::Lfo1, OscBFine, 0.006),
+            ],
+        },
+        Preset {
+            name: "Flute",
+            params: &[
+                (OscATable, 1.0), (OscBOn, 1.0), (OscBTable, 0.0), (OscBOctave, 1.0), (OscBLevel, 0.15),
+                (OscCMode, 3.0), (OscCLevel, 0.06), (FilterType, 0.0), (FilterCutoff, 2600.0),
+                (FilterKeyTrack, 0.6), (EnvAmpAttack, 0.08), (EnvAmpSustain, 1.0), (EnvAmpRelease, 0.15),
+                (Lfo1Rate, 5.2), (FxRevOn, 1.0), (FxRevSize, 0.65), (FxRevMix, 0.28),
+            ],
+            rows: vec![
+                row(S::Lfo1, OscAFine, 0.01), row(S::Lfo1, OscALevel, 0.05), row(S::ModWheel, OscCLevel, 0.15),
+            ],
+        },
     ]
 }
 
 /// Names only; the full list is rebuilt on demand, which is cheap next to the
 /// wavetables a preset needs anyway.
-const NAMES: [&str; 23] = [
+const NAMES: [&str; 48] = [
     "Init Saw",
     "Supersaw Wide",
     "PWM Pad",
@@ -260,6 +583,31 @@ const NAMES: [&str; 23] = [
     "Pressure Swell",
     "Trance Detune Stack",
     "Random Pluck",
+    "Shape Shifter Lead",
+    "Reso Sweep Bass",
+    "Tube Drive Keys",
+    "Harmonic Rise Pad",
+    "Phase Dist Pluck",
+    "FM Glass Piano",
+    "Crushed Chip Lead",
+    "Spectral Drift",
+    "808 Kick",
+    "808 Snare",
+    "808 Clap",
+    "808 Tom",
+    "303 Bass",
+    "Hypersaw",
+    "Growl Bass",
+    "Fog Horn",
+    "Acoustic Piano",
+    "Electric Piano",
+    "Nylon Guitar",
+    "Steel Guitar",
+    "Concert Harp",
+    "Xylophone",
+    "Marimba",
+    "French Horn",
+    "Flute",
 ];
 
 pub fn num_factory_presets() -> usize {
@@ -300,8 +648,7 @@ pub fn build_factory_preset(index: usize) -> Option<PatchData> {
 
     for slot in 0..2 {
         let id = if slot == 0 { ParamId::OscATable } else { ParamId::OscBTable };
-        let factory = (out.params[id.index()].max(0.0) as usize).min(NUM_FACTORY_TABLES - 1);
-        out.tables[slot] = Some(Arc::new(Wavetable::make_factory(factory)));
+        out.tables[slot] = Some(Arc::new(Wavetable::make_factory(out.params[id.index()] as usize)));
     }
     Some(out)
 }
